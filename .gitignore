@@ -1,0 +1,7 @@
+.lsp
+!.lsp/config.edn
+.clj-kondo
+.cpcache
+classes
+
+.DS_Store
