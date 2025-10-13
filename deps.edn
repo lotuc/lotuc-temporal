@@ -6,6 +6,11 @@
    :extra-deps {com.taoensso/nippy {:mvn/version "3.6.0"}
                 integrant/integrant {:mvn/version "1.0.1"}
                 integrant/repl {:mvn/version "0.5.0"}
-                com.appsflyer/pronto {:mvn/version "3.0.0"}}}
+                com.appsflyer/pronto {:mvn/version "3.0.0"}
+                org.babashka/sci {:mvn/version "0.10.49"}
+                com.taoensso/telemere {:mvn/version "1.1.0"}
+                camel-snake-kebab/camel-snake-kebab
+                {:git/url "https://github.com/lotuc/camel-snake-kebab.git"
+                 :git/sha "2a56abb04971bfc18db2a87913f18649eb319999"}}}
   :build
   {:deps {io.github.clojure/tools.build {:git/tag "v0.10.10" :git/sha "deedd62"}}}}}
