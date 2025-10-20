@@ -4,7 +4,7 @@
    [integrant.core :as ig]
    [integrant.repl :as ig.repl]
    [lotuc.sample.temporal.common :as common]
-   [lotuc.sample.temporal.csk :as temporal.csk]
+   [lotuc.temporal.csk :as temporal.csk]
    [sci.core :as sci]
    [taoensso.telemere :as tel]))
 
@@ -23,8 +23,12 @@
    'print print
    'prn prn
    'println println
+   'ex-info ex-info
+   'ex-data ex-data
+   'ex-cause ex-cause
+   'ex-message ex-message
 
-    ;; -- for testing --
+   ;; -- for testing --
    'sleep (fn [v] (Thread/sleep v))
    'now-nano-time (fn [] (. System (nanoTime)))})
 
@@ -223,7 +227,52 @@
 
 (comment
 
+  (bean
+   (-> (.newUntypedWorkflowStub
+        (common/default-client)
+        "39c46dfc-ff2c-492b-8c48-06d6849584b4")
+       (.describe)
+       ;; (.getWorkflowExecutionInfo)
+       ;; (.getExecution)
+       ;; (.getStatus)
+       ;; (.getDescription)
+       )
+   #_())
+
+  (-> (.newUntypedWorkflowStub
+       (common/default-client)
+       "39c46dfc-ff2c-492b-8c48-06d6849584b4")
+      ;; (.getExecution)
+      ;; (.getOptions)
+      ;; bean
+      )
+
+  io.temporal.client.WorkflowClient
+  io.temporal.client.WorkflowStub
+  io.temporal.client.WorkflowExecutionDescription
+  io.temporal.client.WorkflowExecutionMetadata
+  io.temporal.client.WorkflowExecution
+  io.temporal.api.workflow.v1.WorkflowExecutionInfo
+
+  (type (common/default-client))
+
   @(create-&-run-workflow "wf00" {:params [] :code "(+ 4 2)"})
+
+  @(->> {:params [] :code "(try (temporal.activity/execute \"babashka/sci\" \"(/ 4 0)\")
+                                (catch io.temporal.failure.ActivityFailure e
+
+            (println)
+            (println (type e) (ex-data e) (ex-message e) )
+            (println)
+            (let [e (ex-cause e)]
+              (println :> (type e) (ex-data e) (ex-message e) )
+
+              (let [e (ex-cause e)]
+                (println :> (type e) (ex-data e) (ex-message e) ))
+
+            )
+        ))"}
+        (create-&-run-workflow "wf00"))
 
   (def r
     (->> {:params []

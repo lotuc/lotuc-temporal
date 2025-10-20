@@ -1,4 +1,4 @@
-(ns lotuc.sample.temporal.csk
+(ns lotuc.sci-rt.temporal.csk
   (:require
    [camel-snake-kebab.core :as csk]
    [camel-snake-kebab.extras :as cske]
@@ -29,17 +29,23 @@
             (walk/postwalk ->one v))]
     (->all v)))
 
+(defn ->string [v]
+  (if (or (symbol? v) (keyword? v)) (name v) v))
+
+(defn ->keyword [v]
+  (if (or (symbol? v) (keyword? v) (string? v)) (keyword v) v))
+
 (defn transform-keys [t v]
   (cske/transform-keys t (->walkable v)))
 
 (comment
   (transform-keys csk/->kebab-case-string {:md5 "hello"}))
 
-(defn with-params-&-result-transformed
-  ([f] (with-params-&-result-transformed nil f))
+(defn wrap-fn
+  ([f] (wrap-fn nil f))
   ([{:keys [t-params t-result]
-     :or {t-params csk/->kebab-case-keyword
-          t-result csk/->kebab-case-string}}
+     :or {t-params ->keyword
+          t-result ->string}}
     f]
    (fn [& params]
      (->> (map #(transform-keys t-params %) params)
@@ -47,5 +53,15 @@
           (transform-keys t-result)))))
 
 (comment
-  ((with-params-&-result-transformed (fn f [k v] (println v) {k v}))
-   :a {"hello" "world"}))
+  ((wrap-fn
+    {:t-params ->string
+     :t-result ->keyword}
+    (fn f [opts] (prn opts) opts))
+   {:hello "world"})
+
+  ((wrap-fn
+    {:t-params ->keyword
+     :t-result ->string}
+    (fn f [opts] (prn opts) opts))
+   {"hello" "world"})
+  #_())
