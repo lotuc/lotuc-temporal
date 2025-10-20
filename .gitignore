@@ -3,6 +3,7 @@
 .clj-kondo
 .cpcache
 classes
+src-classes
 .nrepl-port
 
 .DS_Store

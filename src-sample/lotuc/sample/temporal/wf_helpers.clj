@@ -93,6 +93,9 @@
 
 (comment
 
+  io.temporal.api.workflowservice.v1.WorkflowServiceGrpc
+  io.temporal.api.workflowservice.v1.WorkflowServiceGrpc$WorkflowServiceBlockingStub
+
   (def stubs (io.temporal.serviceclient.WorkflowServiceStubs/newLocalServiceStubs))
   (def wf-execution
     (describe-workflow-execution stubs {:namespace "default" :execution {:workflow_id "wf000"}}))

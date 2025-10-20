@@ -53,8 +53,6 @@
     (.start worker-factory)
     {:client client :worker worker :worker-factory worker-factory}))
 
-;; io.temporal.worker.WorkerFactory
-
 (defn stop-worker! [{:keys [worker-factory]}]
   (when worker-factory
     (.shutdown worker-factory)

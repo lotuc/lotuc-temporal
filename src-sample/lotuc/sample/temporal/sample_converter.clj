@@ -4,7 +4,7 @@
    [taoensso.nippy :as nippy]))
 
 (def encoding-type-nippy
-  (com.google.protobuf.ByteString/copyFrom "nippy" "UTF-8"))
+  (com.google.protobuf.ByteString/copyFrom "nippy/enc" "UTF-8"))
 
 (def encoding-type-meta-key
   io.temporal.common.converter.EncodingKeys/METADATA_ENCODING_KEY)
@@ -41,7 +41,7 @@
 
 (defrecord NippyConverter [freeze-opts thaw-opts default-opts]
   io.temporal.common.converter.PayloadConverter
-  (getEncodingType [_] "nippy")
+  (getEncodingType [_] "nippy/convert")
   (toData [this v]
     (java.util.Optional/of
      (let [opts (encore/nested-merge default-opts freeze-opts)
