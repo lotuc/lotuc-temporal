@@ -20,11 +20,9 @@
 
 (def !store (atom nil))
 
-(defn store! [v]
-  (reset! !store v))
+(defn store! [v] (reset! !store v))
 
-(defn env-vars []
-  {:activity-options (temporal.workflow/get-activity-options)})
+(defn env-vars [] {:activity-options temporal.workflow/activity-options})
 
 (defn long-task-with-heartbeat [{:keys [hb-interval task-ms]}]
   (let [!hb-error (atom nil)
@@ -90,6 +88,8 @@
    {:workflow-service-stubs @common/+default-service-stubs+
     :workflow-id wf-id}))
 
+(rcf/enable!)
+
 (rcf/tests
  (try (temporal.workflow/rethrow-inside-retry
        (ex-info "retryable" {:temporal/retryable false}))
@@ -103,7 +103,6 @@
       (catch Throwable t (type t)))
  := lotuc.sci_rt.temporal.DoNotRetryExceptionInfo)
 
-(rcf/enable!)
 (integrant.repl/halt)
 (integrant.repl/go)
 
@@ -190,7 +189,7 @@
  ;; default activity options
  v5 := {:activity-options {:startToCloseTimeout [:sec 60]}}
 
- ;; TODO:
+ ;; dynamic vars bind in sci can be retrieved in native functions
  (v6 0) := (v6 1))
 
 (comment
@@ -271,6 +270,41 @@
 
   #_())
 
+(def !count (atom 0))
+(defn count-inc! [] (swap! !count inc))
+
+(def res-timeout-test-0
+  #_{:clj-kondo/ignore [:unresolved-namespace]}
+  (with-sci-wf [_ (run-options)]
+    (temporal.workflow/with-activity-options
+      {:retryOptions {:maximumAttempts 2}
+       :startToCloseTimeout [:sec 15]
+       :heartbeatTimeout [:ms 200]}
+      (temporal.workflow/with-sci-activity
+        (sample/long-task-with-heartbeat
+         {:hb-interval 100 :task-ms 1000})))))
+
+(def res-timeout-test-1
+  (do (reset! !count 0)
+      #_{:clj-kondo/ignore [:unresolved-namespace]}
+      (try [:ok (with-sci-wf [_ (run-options)]
+                  (temporal.workflow/with-activity-options
+                    {:retryOptions {:maximumAttempts 2}
+                     :startToCloseTimeout [:sec 15]
+                     :heartbeatTimeout [:ms 100]}
+                    (temporal.workflow/with-sci-activity
+                      {:namespaces {'user {'count-inc! (str `count-inc!)}}}
+                      (user/count-inc!)
+                      (sample/long-task-with-heartbeat
+                        ;; 300ms > 100ms, will cause heartbeat timeout
+                       {:hb-interval 300 :task-ms 2000}))))]
+           (catch Throwable t [:error t]))))
+
+(rcf/tests
+ res-timeout-test-0 := "done"
+ (first res-timeout-test-1) := :error
+ @!count := 2)
+
 ;;; activity
 (comment
 
@@ -291,7 +325,7 @@
       (temporal.workflow/with-sci-activity
         (prn :run-activity)
         (sample/long-task-with-heartbeat
-         ;; 1500ms > 1s, will cause heartbeat timeout
+             ;; 1500ms > 1s, will cause heartbeat timeout
          {:hb-interval 1500 :task-ms 6000}))))
 
   (with-sci-wf [_ (run-options)]
@@ -369,22 +403,72 @@
 
   #_())
 
+(let [wf-id (str (random-uuid))
+      wait-ready #(Thread/sleep 1000)]
+  (def !f
+    (future (with-sci-wf [_ (run-options wf-id)]
+              (temporal.workflow/wait-condition
+               (fn [] (:done? temporal.workflow/state)))
+              (:n temporal.workflow/state))))
+  (def !f-signal-inc
+    (future (wait-ready)
+            (with-sci-wf [_signal! (message-options wf-id)]
+              (doseq [i (range 6)]
+                (temporal.sci/sleep 100)
+                (alter-var-root #'temporal.workflow/state update :n (fnil + 0) i))
+              (alter-var-root #'temporal.workflow/state assoc :f-signal-inc-done? true))))
+  (def !f-wait-signal-inc
+    (future @!f-signal-inc
+            (with-sci-wf [_update! (message-options wf-id)]
+              (temporal.workflow/wait-condition
+               (fn [] (:f-signal-inc-done? temporal.workflow/state)))
+              true)))
+  (def !f-add-10-on-signal-inc-done
+    (future @!f-wait-signal-inc
+            (with-sci-wf [_update! (message-options wf-id)]
+              (temporal.workflow/wait-condition
+               (fn [] (:f-signal-inc-done? temporal.workflow/state)))
+              (temporal.sci/sleep 1000)
+              (prn [temporal.workflow/action-name :add 10])
+              (alter-var-root #'temporal.workflow/state update :n (fnil + 0) 10)
+              (alter-var-root #'temporal.workflow/state assoc :done? true)
+              (:n temporal.workflow/state))))
+  (def !f-query-on-signal-inc-done
+    (future @!f-wait-signal-inc
+            (with-sci-wf [_query (message-options wf-id)]
+              (prn [temporal.workflow/action-name :state temporal.workflow/state])
+              (:n temporal.workflow/state))))
+  #_())
+
+(rcf/tests
+ @!f-query-on-signal-inc-done :=  (reduce + (range 6))
+ @!f-add-10-on-signal-inc-done := (+ @!f-query-on-signal-inc-done 10)
+ @!f := @!f-add-10-on-signal-inc-done)
+
 ;;; messaging
 (comment
 
   (do (def !f
         (future (with-sci-wf [_ (run-options "hello")]
-                  (do (temporal.sci/sleep 60000)
-                      temporal.workflow/state))))
-      (def !f1
+                  ;; long wait, testing messaging within repl
+                  (temporal.sci/sleep 60000)
+                  temporal.workflow/state)))
+      (def !f-signal-inc
         (future (Thread/sleep 1500)
                 (with-sci-wf [_signal! (message-options "hello")]
                   (doseq [i (range 6)]
                     (temporal.sci/sleep 1000)
                     (prn [temporal.workflow/action-name :add i])
                     (alter-var-root #'temporal.workflow/state
-                                    (fnil + 0) i)))))
+                                    (fnil + 0) i)
+                    (prn [temporal.workflow/action-name :added i
+                          temporal.workflow/state])))))
       #_())
+
+  ;; @('state @temporal.workflow/sci-vars)
+
+  (with-sci-wf [_signal! (message-options "hello")]
+    (prn [temporal.workflow/action-name temporal.workflow/state]))
 
   (with-sci-wf [_signal! (message-options "hello")]
     (prn [temporal.workflow/action-name temporal.workflow/action-params]))

@@ -1,15 +1,78 @@
 (ns lotuc.sci-rt.temporal.workflow
   (:require
    [clojure.java.data :as j]
-   [lotuc.sci-rt.temporal.ex :as temporal.ex]))
+   [lotuc.sci-rt.temporal.ex :as temporal.ex]
+   [lotuc.sci-rt.temporal.sci :as temporal.sci]
+   [sci.core :as sci]))
 
-(def ^:dynamic params nil)
-(def ^:dynamic state nil)
+(defmacro var-syms []
+  `['~'input
+    '~'params
+    '~'state
+    '~'action-input
+    '~'action-name
+    '~'action-params
+    '~'activity-options])
 
-(def ^:dynamic action-name nil)
-(def ^:dynamic action-params nil)
+(defn new-sci-vars []
+  (into {} (for [k (var-syms)]
+             [k (sci/new-dynamic-var k nil)])))
 
-(def ^:dynamic activity-options nil)
+(def ^{:doc "Workflow's whole input. Including `code`, `params` for the code`."
+       :dynamic true}
+  input nil)
+
+(def ^{:doc "input's `:params`, which might be used by `code`."
+       :dynamic true}
+  params nil)
+
+(def ^{:doc "Should save state on this var."
+       :dynamic true}
+  state nil)
+
+(def ^{:doc "Workflow action's input"
+       :dynamic true}
+  action-input nil)
+
+(def ^{:doc "Workflow's messaging action: `:update`, `:signal`, `:query`"
+       :dynamic true}
+  action-name nil)
+
+(def ^{:doc "Messaging action's params."
+       :dynamic true}
+  action-params nil)
+
+(def ^{:doc "Default options for building `activity` stub."
+       :dynamic true}
+  activity-options nil)
+
+(def ^:dynamic sci-vars nil)
+
+(defmacro with-shared-dynamic-vars-bound-to-sci-vars* [var-vals & body]
+  `(temporal.sci/with-shared-dynamic-vars-bound-to-sci-vars
+     ~(namespace `sci-vars) ~`sci-vars ~(var-syms) ~var-vals ~@body))
+
+(defmacro with-shared-dynamic-vars-copied-out-sci* [& body]
+  `(temporal.sci/with-shared-dynamic-vars-copied-out-sci
+     ~(namespace `sci-vars) ~`sci-vars ~(var-syms) ~@body))
+
+(defn wrap-fn-with-shared-dynamic-vars-copied-out-sci [f]
+  (fn [& args]
+    (with-shared-dynamic-vars-copied-out-sci* (apply f args))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn wait-condition
+  ([duration block-condition]
+   (io.temporal.workflow.Workflow/await
+    (j/to-java java.time.Duration duration)
+    (reify java.util.function.Supplier
+      (get [_] (boolean (block-condition))))))
+  ([block-condition]
+   (io.temporal.workflow.Workflow/await
+    (reify java.util.function.Supplier
+      (get [_] (boolean (block-condition)))))
+   true))
 
 (def sci-new-cancellation-scope
   ^:sci/macro
@@ -49,43 +112,39 @@
 (defn sci-with-sci-activity [submit-f]
   ^:sci/macro
   (fn [_&form _&env & body]
-    (let [[params retryable-code code]
+    (let [[params retryable-code namespaces code]
           (let [opts (first body)]
             (if (map? opts)
               [(:params opts)
                (some-> (:retryable opts) pr-str)
+               (:namespaces opts)
                (pr-str `(do ~@(rest body)))]
-              [nil nil (pr-str `(do ~@body))]))]
+              [nil nil nil (pr-str `(do ~@body))]))]
       `(~submit-f
         "babashka/sci"
         (cond-> {"code" ~code}
           ~params (assoc "params" (~'lotuc.sci-rt.temporal.csk/transform-keys
                                    ~'lotuc.sci-rt.temporal.csk/->string ~params))
-          ~retryable-code (assoc "retryable" ~retryable-code))))))
+          ~retryable-code (assoc "retryable" ~retryable-code)
+          ~namespaces (assoc "namespaces" ~namespaces))))))
 
 (defmacro with-sci-activity [params & body]
-  `(with-bindings [temporal.activity/params ~params]
+  `(with-bindings [~'lotuc.sci-rt.temporal.activity/params ~params]
      ~@body))
 
 (defmacro with-sci-activity-async [params & body]
-  `(future (with-bindings [temporal.activity/params ~params]
+  `(future (with-bindings [~'lotuc.sci-rt.temporal.activity/params ~params]
              ~@body)))
 
-(defn sci-execute-activity [build-activity-stub]
-  (fn execute-activity [activity-name & args]
-    (.execute (build-activity-stub) activity-name Object (into-array Object args))))
+(defn build-activity-stub []
+  (io.temporal.workflow.Workflow/newUntypedActivityStub
+   (j/to-java io.temporal.activity.ActivityOptions activity-options)))
 
-(defn sci-execute-activity-async [build-activity-stub]
-  (fn execute-activity-async
-    [activity-name & args]
-    (let [stub (build-activity-stub)]
-      (.executeAsync stub activity-name Object (into-array Object args)))))
+(defn execute-activity [activity-name & args]
+  (.execute (build-activity-stub) activity-name Object (into-array Object args)))
 
-(defn execute-activity [_activity-name & _args]
-  (throw (ex-info "not supported" {})))
-
-(defn execute-activity-async [_activity-name & _args]
-  (throw (ex-info "not supported" {})))
+(defn execute-activity-async [activity-name & args]
+  (.executeAsync (build-activity-stub) activity-name Object (into-array Object args)))
 
 (defn ^{:doc "For exception *explicitly* marked as NOT retryable, rethrow the
   exception with type `DoNotRetryExceptionInfo`."}
