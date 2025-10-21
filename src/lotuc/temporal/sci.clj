@@ -1,9 +1,8 @@
 (ns lotuc.temporal.sci
   (:require
    [clojure.java.data :as j]
-   [lotuc.sci-rt.temporal.activity]
+   [lotuc.sci-rt.temporal.activity :as temporal.activity]
    [lotuc.sci-rt.temporal.csk :as temporal.csk]
-   [lotuc.sci-rt.temporal.env :as rt.temporal.env]
    [lotuc.sci-rt.temporal.ex :as temporal.ex]
    [lotuc.sci-rt.temporal.sci :as temporal.sci]
    [lotuc.sci-rt.temporal.workflow :as temporal.workflow]
@@ -72,62 +71,70 @@
     'rand-int rand-int
     'rand rand}})
 
-(defn build-sci-activity-ns [params]
-  (let [^io.temporal.activity.ActivityExecutionContext ctx
-        (io.temporal.activity.Activity/getExecutionContext)]
-    (letfn [(heartbeat [v]
-              (.heartbeat ctx v))]
-      (encore/nested-merge
-       sci-ns
-       {'lotuc.sci-rt.temporal.activity
-        {'execution-ctx ctx
-         'heartbeat heartbeat
-         'params params}}))))
+(defn build-sci-activity-ns [vars]
+  (encore/nested-merge
+   sci-ns
+   {'lotuc.sci-rt.temporal.activity
+    (merge
+     ;; vars
+     vars
+     ;; fns
+     (->> {'execution-ctx temporal.activity/execution-ctx}
+          (reduce-kv
+           (fn [m k v]
+             (assoc m k (temporal.activity/wrap-fn-with-shared-dynamic-vars-copied-out-sci v)))
+           {})))}))
 
 (defn build-sci-workflow-ns
-  [{:keys [params vars]}]
-  (let [{:keys [state action-name action-params activity-options]} vars
-        random (io.temporal.workflow.Workflow/newRandom)]
-    (letfn [(build-activity-stub []
-              (io.temporal.workflow.Workflow/newUntypedActivityStub
-               (j/to-java io.temporal.activity.ActivityOptions @activity-options)))]
-      (encore/nested-merge
-       sci-ns
-       {'clojure.core
-        {'random-uuid io.temporal.workflow.Workflow/randomUUID
-         'rand-int #(.nextInt random %)
-         'rand (fn
-                 ([] (.nextFloat random))
-                 ([n] (* n (.nextFloat random))))}
+  [vars]
+  (let [random (io.temporal.workflow.Workflow/newRandom)]
+    (encore/nested-merge
+     sci-ns
+     {'clojure.core
+      {'random-uuid io.temporal.workflow.Workflow/randomUUID
+       'rand-int #(.nextInt random %)
+       'rand (fn
+               ([] (.nextFloat random))
+               ([n] (* n (.nextFloat random))))}
 
-        'lotuc.sci-rt.temporal.sci
-        {'sleep io.temporal.workflow.Workflow/sleep
-         'systemTimeMillis io.temporal.workflow.Workflow/currentTimeMillis}
+      'lotuc.sci-rt.temporal.sci
+      {'sleep io.temporal.workflow.Workflow/sleep
+       'systemTimeMillis io.temporal.workflow.Workflow/currentTimeMillis}
 
-        'lotuc.sci-rt.temporal.workflow
-        {'params                  params
-         'state                   state
-         'action-name             action-name
-         'action-params           action-params
-         'async-run               temporal.workflow/sci-async-run
-         'new-cancellation-scope  temporal.workflow/sci-new-cancellation-scope
+      'lotuc.sci-rt.temporal.workflow
+      (merge
+       ;; vars
+       vars
+       ;; fns
+       (->> {'async-run              temporal.workflow/sci-async-run
+             'execute-activity       temporal.workflow/execute-activity
+             'execute-activity-async temporal.workflow/execute-activity-async
+             'retry                  temporal.workflow/retry
+             'retry-async            temporal.workflow/retry-async
+             'wait-condition         temporal.workflow/wait-condition}
+            (reduce-kv
+             (fn [m k v]
+               (assoc m k (temporal.workflow/wrap-fn-with-shared-dynamic-vars-copied-out-sci v)))
+             {}))
+       ;; macros
+       {'new-cancellation-scope  temporal.workflow/sci-new-cancellation-scope
+        'with-activity-options   temporal.workflow/sci-with-activity-options
+        'with-sci-activity       (temporal.workflow/sci-with-sci-activity
+                                  'lotuc.sci-rt.temporal.workflow/execute-activity)
+        'with-sci-activity-async (temporal.workflow/sci-with-sci-activity
+                                  'lotuc.sci-rt.temporal.workflow/execute-activity-async)
+        'with-retry              temporal.workflow/sci-with-retry
+        'with-retry-async        temporal.workflow/sci-with-retry-async})})))
 
-         'activity-options        activity-options
-         'with-activity-options   temporal.workflow/sci-with-activity-options
-
-         'with-sci-activity       (temporal.workflow/sci-with-sci-activity
-                                   'lotuc.sci-rt.temporal.workflow/execute-activity)
-         'with-sci-activity-async (temporal.workflow/sci-with-sci-activity
-                                   'lotuc.sci-rt.temporal.workflow/execute-activity-async)
-         'execute-activity        (temporal.workflow/sci-execute-activity
-                                   build-activity-stub)
-         'execute-activity-async  (temporal.workflow/sci-execute-activity-async
-                                   build-activity-stub)
-
-         'with-retry              temporal.workflow/sci-with-retry
-         'with-retry-async        temporal.workflow/sci-with-retry-async
-         'retry                   temporal.workflow/retry
-         'retry-async             temporal.workflow/retry-async}}))))
+(defn build-sci-namespaces-opts [wrap-fn namespaces]
+  (into {} (for [[ns-k ns-vars] namespaces]
+             [(symbol ns-k)
+              (into {} (for [[var-k var-ref] ns-vars]
+                         [(symbol var-k)
+                          (let [v (resolve (symbol var-ref))]
+                            (if (or (fn? v) (and (var? v) (fn? @v)))
+                              (wrap-fn v)
+                              v))]))])))
 
 (definterface ^{io.temporal.activity.ActivityInterface []}
   SciActivity
@@ -150,33 +157,39 @@
      {:unfinishedPolicy io.temporal.workflow.HandlerUnfinishedPolicy/ABANDON}}
    ^void handleSignalSilenceOnAbandon [_params]))
 
-(defn activity-run* [opts {:keys [code params retryable-code namespaces]}]
-  (let [opts' (encore/nested-merge
-               {:namespaces (build-sci-activity-ns params)
+(defn activity-run* [opts {:keys [code params retryable-code namespaces] :as input}]
+  (let [vars (temporal.activity/new-sci-vars)
+        opts' (encore/nested-merge
+               {:namespaces (build-sci-activity-ns vars)
                 :ns-aliases sci-ns-aliases}
                opts
                {:namespaces
-                (into {} (for [[ns-k ns-vars] namespaces]
-                           [(symbol ns-k)
-                            (into {} (for [[var-k var-ref] ns-vars]
-                                       [(symbol var-k)
-                                        (resolve (symbol var-ref))]))]))})
+                (build-sci-namespaces-opts
+                 temporal.activity/wrap-fn-with-shared-dynamic-vars-copied-out-sci
+                 namespaces)})
         ctx (sci/init opts')]
     (letfn [(retryable? [t]
               (if retryable-code
-                (try (rt.temporal.env/with-env-temporal-activity {:params params}
-                       ((sci/eval-string retryable-code
-                                         {:namespaces sci-ns
-                                          :deny ['alter-var-root]
-                                          :ns-aliases sci-ns-aliases})
-                        t))
+                (try (binding [temporal.activity/sci-vars vars]
+                       (temporal.activity/with-shared-dynamic-vars-bound-to-sci-vars*
+                         {'input input
+                          'params params}
+                         ((sci/eval-string retryable-code
+                                           {:namespaces sci-ns
+                                            :deny ['alter-var-root]
+                                            :ns-aliases sci-ns-aliases})
+                          t)))
                      (catch Throwable _e1 false))
                 false))]
-      (try (rt.temporal.env/with-env-temporal-activity {:params params}
-             (sci/eval-string* ctx code))
+      (try (binding [temporal.activity/sci-vars vars]
+             (temporal.activity/with-shared-dynamic-vars-bound-to-sci-vars*
+               {'input input
+                'params params}
+               (sci/eval-string* ctx code)))
            (catch Throwable t
              (temporal.ex/rethrow-toplevel t retryable?))))))
 
+#_{:clojure-lsp/ignore [:clojure-lsp/unused-public-var]}
 (defrecord SciActivityImpl [opts]
   SciActivity
   (sci [_ params]
@@ -196,90 +209,88 @@
 (defonce !wf-run-state (atom {}))
 
 (defn workflow-run-sci-code!
-  ([{:keys [ctx params ctx-readonly vars]}
-    {:keys [action code retryable?]}]
-   (try
-     (let [{:keys [action-name action-params activity-options]} vars]
-       (rt.temporal.env/with-env-temporal-workflow
-         {:params params
-          :action-name (:action-name action)
-          :action-params (:action-params action)
-          :activity-options @activity-options}
-         (sci/binding [action-name (:action-name action)
-                       action-params (:action-params action)]
-            ;; use `ctx` by default, fallback to readonly one.
-           (sci/eval-string* (or ctx ctx-readonly) code))))
-     (catch Throwable t
-       (temporal.ex/rethrow-toplevel t (or retryable? (constantly false)))))))
+  ([{:keys [ctx ctx-readonly vars input] :as _state-map}
+    {:keys [action code retryable-code]}]
+   (let [params (:params input)
+         activity-options
+         (or (:activity-options params)
+             {:startToCloseTimeout [:sec 60]})]
+     (letfn [(retryable? [t]
+               (if retryable-code
+                 (try (binding [temporal.workflow/sci-vars vars]
+                        (temporal.workflow/with-shared-dynamic-vars-bound-to-sci-vars*
+                          {'input input
+                           'params params
+                           'activity-options activity-options}
+                          ((sci/eval-string retryable-code ctx-readonly)
+                           t)))
+                      (catch Throwable _e false))
+                 false))]
+       (try
+         (binding [temporal.workflow/sci-vars vars]
+           (temporal.workflow/with-shared-dynamic-vars-bound-to-sci-vars*
+             {'input input
+              'params params
+              'activity-options activity-options
+              'action-input action
+              'action-name (:name action)
+              'action-params (:params action)}
+             ;; use `ctx` by default, fallback to readonly one.
+             (sci/eval-string* (or ctx ctx-readonly) code)))
+         (catch Throwable t
+           (temporal.ex/rethrow-toplevel t (or retryable? (constantly false)))))))))
 
-(defn workflow-run* [this {:keys [code retryable-code namespaces] :as params}]
+(defn workflow-run* [this {:keys [code retryable-code namespaces] :as input}]
   (let [wf-state-id      (wf-run-id)
         _                (->> {:track-type :gc
                                :dispose-fn #(swap! !wf-run-state dissoc wf-state-id)}
                               (resource/track this))
 
-        state            (sci/new-dynamic-var 'state nil)
-        action-name      (sci/new-dynamic-var 'action-name nil)
-        action-params    (sci/new-dynamic-var 'action-params nil)
-        activity-options (->> (or (:activity-options params) {:startToCloseTimeout [:sec 60]})
-                              (sci/new-dynamic-var 'activity-options))
-        vars             {:state state
-                          :action-name action-name
-                          :action-params action-params
-                          :activity-options activity-options}
-
+        vars             (temporal.workflow/new-sci-vars)
         opts             (encore/nested-merge
-                          {:namespaces (build-sci-workflow-ns {:params params :vars vars})
+                          {:namespaces (build-sci-workflow-ns vars)
                            :ns-aliases sci-ns-aliases}
                           {:namespaces
-                           (into {} (for [[ns-k ns-vars] namespaces]
-                                      [(symbol ns-k)
-                                       (into {} (for [[var-k var-ref] ns-vars]
-                                                  [(symbol var-k)
-                                                   (resolve (symbol var-ref))]))]))})
+                           (build-sci-namespaces-opts
+                            temporal.workflow/wrap-fn-with-shared-dynamic-vars-copied-out-sci
+                            namespaces)})
         ctx              (sci/init opts)
         ctx-readonly     (sci/init (assoc opts :deny ['alter-var-root]))
-        state-map        {:params params
+        state-map        {:input input
+                          :vars vars
                           :ctx ctx
-                          :ctx-readonly ctx-readonly
-                          :vars vars}]
+                          :ctx-readonly ctx-readonly}]
     (swap! !wf-run-state assoc wf-state-id state-map)
-    (letfn [(retryable? [t]
-              (if retryable-code
-                (try (rt.temporal.env/with-env-temporal-workflow {:params params}
-                       ((sci/eval-string retryable-code ctx-readonly)
-                        t))
-                     (catch Throwable _e false))
-                false))]
-      (workflow-run-sci-code! state-map {:code code :retryable? retryable?}))))
+    (workflow-run-sci-code! state-map {:code code :retryable-code retryable-code})))
 
 (defn query* [{:keys [code] :as p}]
   (let [state-map (-> (get @!wf-run-state (wf-run-id))
                       ;; *exclude* writable ctx.
                       (dissoc :ctx))]
     (workflow-run-sci-code!
-     state-map {:action {:action-name :query :action-params p}
+     state-map {:action {:name :query :params p}
                 :code   code})))
 
 (defn update* [{:keys [code] :as p}]
   (let [state-map (get @!wf-run-state (wf-run-id))]
     (workflow-run-sci-code!
-     state-map {:action {:action-name :update :action-params p}
+     state-map {:action {:name :update :params p}
                 :code   code})))
 
 (defn update-validator* [{:keys [validator-code] :as p}]
   (when validator-code
     (let [state-map (get @!wf-run-state (wf-run-id))]
       (workflow-run-sci-code!
-       state-map {:action {:action-name :update-validator :action-params p}
+       state-map {:action {:name :update-validator :params p}
                   :code   validator-code}))))
 
 (defn signal* [{:keys [code] :as p}]
   (let [state-map (get @!wf-run-state (wf-run-id))]
     (workflow-run-sci-code!
-     state-map {:action {:action-name :signal :action-params p}
+     state-map {:action {:name :signal :params p}
                 :code   code})))
 
+#_{:clojure-lsp/ignore [:clojure-lsp/unused-public-var]}
 (defrecord SciWorkflowImpl []
   SciWorkflow
   (sciRun [this params]
