@@ -11,9 +11,9 @@
   (into {} (for [k (var-syms)]
              [k (sci/new-dynamic-var k nil)])))
 
-(def ^:dynamic input (sci/new-dynamic-var 'input nil))
+(def ^:dynamic input nil)
 
-(def ^:dynamic params (sci/new-dynamic-var 'params nil))
+(def ^:dynamic params nil)
 
 (def ^:dynamic sci-vars nil)
 
