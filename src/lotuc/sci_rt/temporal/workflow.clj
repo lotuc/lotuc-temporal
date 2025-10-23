@@ -138,21 +138,22 @@
 (defn sci-with-sci-activity [submit-f]
   ^:sci/macro
   (fn [_&form _&env & body]
-    (let [[params retryable-code namespaces code]
+    (let [{:keys [opts activity-options retryable-code code]}
           (let [opts (first body)]
             (if (map? opts)
-              [(:params opts)
-               (some-> (:retryable opts) pr-str)
-               (:namespaces opts)
-               (pr-str `(do ~@(rest body)))]
-              [nil nil nil (pr-str `(do ~@body))]))]
-      `(~submit-f
-        "babashka/sci"
-        (cond-> {"code" ~code}
-          ~params (assoc "params" (~'lotuc.sci-rt.temporal.csk/transform-keys
-                                   ~'lotuc.sci-rt.temporal.csk/->string ~params))
-          ~retryable-code (assoc "retryable" ~retryable-code)
-          ~namespaces (assoc "namespaces" ~namespaces))))))
+              {:opts             (dissoc opts :activity-options :retryable)
+               :activity-options (:activity-options opts)
+               :retryable        (some-> (:retryable opts) pr-str)
+               :code             (pr-str `(do ~@(rest body)))}
+              {:code (pr-str `(do ~@body))}))
+
+          opts `(cond-> (assoc ~opts :code ~code)
+                  ~retryable-code (assoc :retryable ~retryable-code))]
+      (if activity-options
+        `(~`with-activity-options
+          ~activity-options
+          (~submit-f "babashka/sci" ~opts))
+        `(~submit-f "babashka/sci" ~opts)))))
 
 (defmacro with-sci-activity [params & body]
   `(binding [~'lotuc.sci-rt.temporal.activity/params ~params]

@@ -254,7 +254,8 @@
   (handleSignalSilenceOnAbandon [_ params]
     ((temporal.csk/wrap-fn signal*) params)))
 
-(defn ^{:arglists '([^SciWorkflow wf {:keys [code retryable-code namespaces]}])}
+(defn ^{:arglists '([^SciWorkflow wf {:keys [code retryable-code namespaces]}])
+        :style/indent 1}
   sci-run!
   [^SciWorkflow wf p]
   (->> (temporal.csk/transform-keys temporal.csk/->string p)
