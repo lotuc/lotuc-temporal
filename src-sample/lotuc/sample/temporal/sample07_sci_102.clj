@@ -156,14 +156,14 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
   ([wf-id params]
    (lotuc.temporal.sci/sci-run!
     (lotuc.temporal.sci/sci-workflow-stub (run-options wf-id))
-    params)))
+     params)))
 
 (rcf/tests
  "workflow code execution"
 
  (lotuc.temporal.sci/sci-run!
   (lotuc.temporal.sci/sci-workflow-stub (run-options))
-  {:code "(+ 4 2)"})
+   {:code "(+ 4 2)"})
  := 6
 
  (sci-run* {:code "(+ 4 2)"}) := 6
@@ -383,7 +383,7 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
          hb
          (fn []
            (async/thread
-             (tel/log! {:msg ["heartbeat" hb-interval]})
+             ;; (tel/log! {:msg ["heartbeat" hb-interval]})
              (try (.heartbeat ctx "long-task")
                   true
                   (catch Throwable t
@@ -451,8 +451,10 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
                                            'long-task-with-heartbeat (str `long-task-with-heartbeat)}}}
                       (user/count-inc!)
                       (user/long-task-with-heartbeat
-                      ;; 300ms > 100ms, will cause heartbeat timeout
-                       {:hb-interval 300 :task-ms 2000}))))})]
+                       ;; 1000ms > 100ms, will cause heartbeat timeout (for this
+                       ;; to be triggered stablly, increase the heartbeat
+                       ;; interval)
+                       {:hb-interval 1000 :task-ms 2000}))))})]
          (catch Throwable t [:error t])))
   (first res-timeout-test-1) := :error
   @!count := 2))
@@ -504,8 +506,7 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
  (sci-run*
   {:code
    (with-sci-code
-     @(temporal.workflow/with-sci-activity-async
-        {:params 4}
+     @(temporal.workflow/with-sci-activity-async {:params 4}
         (+ temporal.activity/params 2)))})
  := 6)
 
@@ -518,9 +519,8 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
     {:code
      (with-sci-code
        (let [vs (for [i (range 10)]
-                  (temporal.workflow/with-sci-activity-async
-                        ;; runtime value needs to pass to activity code via params
-                    {:params i}
+                  ;; runtime value needs to pass to activity code via params
+                  (temporal.workflow/with-sci-activity-async {:params i}
                     (temporal.sci/sleep 1000)
                     temporal.activity/params))]
          (doall vs)
@@ -544,7 +544,7 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
   (rcf/tests
    "retryable exception causes activity retries forever"
    (def wf-id (str (random-uuid)))
-
+   (reset! !m {})
    (future (try (sci-run*
                  {:namespaces {'user {'inc-v! (str `inc-v!)}}
                   :code (with-sci-code
@@ -561,22 +561,51 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
    (terminate-workflow wf-id))
 
   (rcf/tests
-   "setup retry options manually"
+   "setup retry options manually - with `with-activity-options`"
    (def wf-id (str (random-uuid)))
+   (reset! !m {})
    (def !f (future (try (sci-run*
                          {:namespaces {'user {'inc-v! (str `inc-v!)}}
                           :code (with-sci-code
                                   (inc-v! :workflow)
                                   (temporal.workflow/with-activity-options
-                                    [:retryOptions {:initialInterval [:ms 100]
+                                    {:retryOptions {:initialInterval [:ms 100]
                                                     :maximumAttempts 2}
-                                     :startToCloseTimeout [:sec 60]]
+                                     :startToCloseTimeout [:sec 60]}
                                     (temporal.workflow/with-sci-activity
                                       {:namespaces (:namespaces temporal.workflow/input)}
                                       (inc-v! :activity)
-                                      (throw (ex-info "" {:temporal/retryable true})))))})
-                        (catch Throwable t (rcf/tap (type t))))))
+                                      (throw (ex-info "failed-42" {:temporal/retryable true})))))})
+                        (catch Throwable _t
+                          (rcf/tap :failed)))))
    ;; notice here the retry should stop on 2 attempts
+   rcf/% := :failed
+   (= (:workflow @!m) 1) := true
+   (= (:activity @!m) 2) := true
+   (not= (deref !f 100 ::timeout) ::timeout) := true
+   (when (= (deref !f 100 ::timeout) ::timeout)
+     (terminate-workflow wf-id)))
+
+  (rcf/tests
+   "setup retry options manually - without `with-activity-options`"
+   (def wf-id (str (random-uuid)))
+   (reset! !m {})
+   (def !f (future (try (sci-run*
+                         {:namespaces {'user {'inc-v! (str `inc-v!)}}
+                          :code (with-sci-code
+                                  (inc-v! :workflow)
+                                  (temporal.workflow/with-sci-activity
+                                    {:namespaces (:namespaces temporal.workflow/input)
+                                     :activity-options
+                                     {:retryOptions {:initialInterval [:ms 100]
+                                                     :maximumAttempts 2}
+                                      :startToCloseTimeout [:sec 60]}}
+                                    (inc-v! :activity)
+                                    (throw (ex-info "failed-42" {:temporal/retryable true}))))})
+                        (catch Throwable _t
+                          (rcf/tap :failed)))))
+   ;; notice here the retry should stop on 2 attempts
+   rcf/% := :failed
    (= (:workflow @!m) 1) := true
    (= (:activity @!m) 2) := true
    (not= (deref !f 100 ::timeout) ::timeout) := true

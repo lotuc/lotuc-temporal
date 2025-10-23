@@ -24,11 +24,11 @@ The check is done on `actual-cause`."}
                  (if b
                    (throw t)
                    (throw (io.temporal.failure.ApplicationFailure/newNonRetryableFailureWithCause
-                           (ex-message t) (.getName (type t)) t (into-array Object []))))
+                           (ex-message t) (.getName (type t)) throwed (into-array Object []))))
                  (if (retryable? t)
                    (throw t)
                    (throw (io.temporal.failure.ApplicationFailure/newNonRetryableFailureWithCause
-                           (ex-message t) (.getName (type t)) t (into-array Object [])))))))]
+                           (ex-message t) (.getName (type t)) throwed (into-array Object [])))))))]
      (try-rethrow* (actual-cause throwed) retryable?))))
 
 (defn ex-info-retryable
