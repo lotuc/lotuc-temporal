@@ -34,15 +34,18 @@
               :jar-file jar-file
               :class-dir class-dir}))
 
+(defn javac [_]
+  (b/javac {:basis basis
+            :src-dirs ["src"]
+            :class-dir class-dir
+            :javac-opts ["-source" "8" "-target" "8"]}))
+
 (defn uber [_]
   (clean nil)
   (b/copy-dir {:src-dirs ["src" "resources"]
                :ignores [#".*\.java"]
                :target-dir class-dir})
-  (b/javac {:basis basis
-            :src-dirs ["src"]
-            :class-dir class-dir
-            :javac-opts ["-source" "8" "-target" "8"]})
+  (javac nil)
   (b/uber {:class-dir class-dir
            :uber-file uber-file
            :basis basis
