@@ -1,8 +1,11 @@
 (ns lotuc.sci-rt.temporal.workflow
   (:require
    [clojure.java.data :as j]
+   [lotuc.sci-rt.temporal.csk :as temporal.csk]
    [lotuc.sci-rt.temporal.ex :as temporal.ex]
    [lotuc.sci-rt.temporal.sci :as temporal.sci]
+   [lotuc.sci-rt.temporal.workflow.async :as temmporal.workflow.async]
+   [lotuc.sci-rt.temporal.workflow.promise :as temporal.workflow.promise]
    [sci.core :as sci]))
 
 (defmacro var-syms []
@@ -57,12 +60,18 @@
      ~(namespace `sci-vars) ~`sci-vars ~(var-syms) ~@body))
 
 (defn wrap-fn-with-shared-dynamic-vars-copied-out-sci [f]
-  (fn [& args]
-    (with-shared-dynamic-vars-copied-out-sci* (apply f args))))
+  {:pre [sci-vars]}
+  (let [sci-vars* sci-vars]
+    (fn [& args]
+      (binding [sci-vars sci-vars*]
+        (with-shared-dynamic-vars-copied-out-sci* (apply f args))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn wait-condition
+(defn workflow-info []
+  (j/from-java (io.temporal.workflow.Workflow/getInfo)))
+
+(defn sci-wait-condition
   ([duration block-condition]
    (io.temporal.workflow.Workflow/await
     (j/to-java java.time.Duration duration)
@@ -73,6 +82,10 @@
     (reify java.util.function.Supplier
       (get [_] (boolean (block-condition)))))
    true))
+
+(defn wait-condition
+  ([_duration _block-condition] (throw (ex-info "not supported" {})))
+  ([_block-condition] (throw (ex-info "not supported" {}))))
 
 (def sci-new-cancellation-scope
   ^:sci/macro
@@ -93,13 +106,26 @@
        (isCancelRequested [_] (boolean @!cancel#))
        (getCancellationRequest [_]))))
 
-(defn sci-async-run [f]
-  (io.temporal.workflow.Async/function
-   (reify io.temporal.workflow.Functions$Func
-     (apply [_] (f)))))
+(defn sci-async-call-function [f & args]
+  (apply (temmporal.workflow.async/to-async-function f) args))
 
-(defn async-run [f]
-  (future (f)))
+(defn async-call-function [f & args]
+  (future (apply f args)))
+
+(defn sci-async-call-procedure [f & args]
+  (apply (temmporal.workflow.async/to-async-procedure f) args))
+
+(defn async-call-procedure [f & args]
+  (future (apply f args) nil))
+
+(def sci-async
+  ^{:sci/macro true}
+  (fn [_&form _&env & body]
+    `(~`async-call-function
+      ^:once (fn [] ~@body))))
+
+(defmacro async [& body]
+  `(future ~@body))
 
 (def sci-with-activity-options
   ^:sci/macro
@@ -129,22 +155,44 @@
           ~namespaces (assoc "namespaces" ~namespaces))))))
 
 (defmacro with-sci-activity [params & body]
-  `(with-bindings [~'lotuc.sci-rt.temporal.activity/params ~params]
+  `(binding [~'lotuc.sci-rt.temporal.activity/params ~params]
      ~@body))
 
 (defmacro with-sci-activity-async [params & body]
-  `(future (with-bindings [~'lotuc.sci-rt.temporal.activity/params ~params]
+  `(future (binding [~'lotuc.sci-rt.temporal.activity/params ~params]
              ~@body)))
 
 (defn build-activity-stub []
+  (when (and (not (:startToCloseTimeout activity-options))
+             (not (:scheduleToCloseTimeout activity-options)))
+    (throw (ex-info (str "build-activity-stub: BadScheduleActivityAttributes: "
+                         "A valid StartToClose or ScheduleToCloseTimeout is not "
+                         "set on ScheduleActivityTaskCommand")
+                    {:activity-options activity-options
+                     :temporal/retryable false})))
   (io.temporal.workflow.Workflow/newUntypedActivityStub
    (j/to-java io.temporal.activity.ActivityOptions activity-options)))
 
+(defn sci-execute-activity [activity-name & args]
+  (->> (temporal.csk/transform-keys temporal.csk/->string args)
+       (into-array Object)
+       (.execute (build-activity-stub) activity-name Object)
+       (temporal.csk/transform-keys temporal.csk/->keyword)))
+
+(defn sci-execute-activity-async [activity-name & args]
+  (temporal.workflow.promise/promise-then
+   (->> (temporal.csk/transform-keys temporal.csk/->string args)
+        (into-array Object)
+        (.executeAsync (build-activity-stub) activity-name Object))
+   :apply (fn [v] (temporal.csk/transform-keys temporal.csk/->keyword v))))
+
+(def ^{:doc "local developing"} !activity-registry (atom {}))
+
 (defn execute-activity [activity-name & args]
-  (.execute (build-activity-stub) activity-name Object (into-array Object args)))
+  (apply (get @!activity-registry activity-name) args))
 
 (defn execute-activity-async [activity-name & args]
-  (.executeAsync (build-activity-stub) activity-name Object (into-array Object args)))
+  (future (apply (get @!activity-registry activity-name) args)))
 
 (defn ^{:doc "For exception *explicitly* marked as NOT retryable, rethrow the
   exception with type `DoNotRetryExceptionInfo`."}
@@ -165,9 +213,9 @@
   (throw (ex-info (str "retried: " (ex-message t))  (ex-data t) t)))
 
 (defn ^{:doc "`f` do sync run"}
-  retry
+  sci-retry
   ([retry-options f]
-   (retry (dissoc retry-options :expiration) (:expiration retry-options) f))
+   (sci-retry (dissoc retry-options :expiration) (:expiration retry-options) f))
   ([retry-options expiration f]
    (try
      (io.temporal.workflow.Workflow/retry
@@ -185,9 +233,9 @@
        (rethrow-outside-retry t)))))
 
 (defn ^{:doc "`f` do async run & returns Promise"}
-  retry-async
+  sci-retry-async
   ([retry-options f]
-   (retry-async (dissoc retry-options :expiration) (:expiration retry-options) f))
+   (sci-retry-async (dissoc retry-options :expiration) (:expiration retry-options) f))
   ([retry-options expiration f]
    (try (io.temporal.workflow.Async/retry
          (j/to-java io.temporal.common.RetryOptions
@@ -203,6 +251,16 @@
                                  (rethrow-inside-retry e)))))))
         (catch Throwable t
           (rethrow-outside-retry t)))))
+
+(defn retry
+  ([retry-options f]
+   (retry (dissoc retry-options :expiration) (:expiration retry-options) f))
+  ([_retry-options _expiration f] (try (f) (catch Throwable e (rethrow-outside-retry e)))))
+
+(defn retry-async
+  ([retry-options f]
+   (retry-async (dissoc retry-options :expiration) (:expiration retry-options) f))
+  ([_retry-options _expiration f] (future (try (f) (catch Throwable e (rethrow-outside-retry e))))))
 
 (def sci-with-retry ^:sci/macro
   (fn [_&form _&env options & body]
@@ -220,10 +278,96 @@
         (dissoc opts# :expiration)
         (:expiration opts#)
         ;; do async run
-        ^:once (fn [] (~`async-run ^:once (fn [] ~@body)))))))
+        ^:once (fn [] (~`async ~@body))))))
 
 (defmacro with-retry [options & body]
   (apply sci-with-retry nil nil options body))
 
 (defmacro with-retry-async [options & body]
   (apply sci-with-retry-async nil nil options body))
+
+(defn promise-completed? [v] (future-done? v))
+(defn promise-get-failure [v] (try @v nil (catch Throwable t t)))
+(defn promise-get
+  ([v] @v)
+  ([v duration]
+   (let [r (deref v (.toMillis (j/to-java java.time.Duration duration)) ::timeout)]
+     (when (= r ::timeout) (throw (java.util.concurrent.TimeoutException. "timeout")))
+     r)))
+
+(defn promise-then
+  ([v f] (promise-then v :handle f))
+  ([v typ f]
+   {:pre [#{:handle :apply :compose :handle-exception} typ]}
+   (future
+     (case typ
+       :handle
+       (try (f @v nil) (catch Exception e (f nil e)))
+       :apply
+       (f @v)
+       :compose
+       @(f @v)
+       :handle-exception
+       (try @f (catch Exception e (f e)))))))
+
+(defn promise-all-of [promises]
+  (when (seq promises)
+    (let [res (promise)
+          !n (atom (count promises))
+          futs
+          (doall
+           (for [p promises]
+             (future (try @p
+                          (when (zero? (swap! !n dec))
+                            (deliver res nil))
+                          (catch Throwable t
+                            (deliver res t))))))]
+      (try
+        (when-some [e @res]
+          (throw e))
+        (finally (doseq [f futs] (future-cancel f)))))))
+
+(defn promise-any-of [promises]
+  (when (seq promises)
+    (let [res (promise)
+          futs
+          (doall
+           (for [p promises]
+             (future (try (deliver res [@p])
+                          (catch Throwable t
+                            (deliver res [nil t]))))))]
+      (try
+        (let [[ok err] @res]
+          (if err (throw err) ok))
+        (finally (doseq [f futs] (future-cancel f)))))))
+
+(defn sci-fns [sci-vars*]
+  (binding [sci-vars sci-vars*]
+    (->> {'async-call-function    sci-async-call-function
+          'async-call-procedure   sci-async-call-procedure
+
+          'promise-completed?     temporal.workflow.promise/promise-completed?
+          'promise-get-failure    temporal.workflow.promise/promise-get-failure
+          'promise-get            temporal.workflow.promise/promise-get
+          'promise-then           temporal.workflow.promise/promise-then
+          'promise-all-of         temporal.workflow.promise/promise-all-of
+          'promise-any-of         temporal.workflow.promise/promise-any-of
+
+          'execute-activity       sci-execute-activity
+          'execute-activity-async sci-execute-activity-async
+          'retry                  sci-retry
+          'retry-async            sci-retry-async
+          'wait-condition         sci-wait-condition}
+         (reduce-kv
+          (fn [m k v]
+            (assoc m k (wrap-fn-with-shared-dynamic-vars-copied-out-sci v)))
+          {}))))
+
+(def sci-macros
+  {'new-cancellation-scope  sci-new-cancellation-scope
+   'with-activity-options   sci-with-activity-options
+   'with-sci-activity       (sci-with-sci-activity `execute-activity)
+   'with-sci-activity-async (sci-with-sci-activity `execute-activity-async)
+   'with-retry              sci-with-retry
+   'with-retry-async        sci-with-retry-async
+   'async                   sci-async})

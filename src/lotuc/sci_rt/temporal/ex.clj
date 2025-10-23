@@ -1,21 +1,35 @@
 (ns lotuc.sci-rt.temporal.ex)
 
-(defn ^{:doc "For exception *explicitly* marked as NOT retryable, rethrow the
-  exception with type non-retryable `ApplicationFailure`."}
+(defn actual-cause [e]
+  (or (when (= (:type (ex-data e)) :sci/error)
+        (ex-cause e))
+      e))
+
+(defn ^{:doc "For TemporalException, rethrow as IS. For \"retryable\", rethrow
+as IS.
+
+\"retryable\" check:
+1. if `:temporal/retryable` mark exists on ex-data, use it
+2. else use given `retryable?` function
+
+The check is done on `actual-cause`."}
   rethrow-toplevel
   ([throwed]
    (rethrow-toplevel throwed (constantly false)))
   ([throwed retryable?]
-   (letfn [(try-rethrow* [t]
-             (if (or (:temporal/retryable (ex-data throwed)) (retryable? t))
+   (letfn [(try-rethrow* [t retryable?]
+             (if (instance? io.temporal.failure.TemporalException t)
                (throw t)
-               (throw (io.temporal.failure.ApplicationFailure/newNonRetryableFailureWithCause
-                       (ex-message t) (.getName (type t)) t (into-array Object [])))))]
-     (try-rethrow* throwed)
-     (when (= (:type (ex-data throwed)) :sci/error)
-       (when-some [e (ex-cause throwed)]
-         (try-rethrow* e)))
-     (throw throwed))))
+               (if-some [b (:temporal/retryable (ex-data t))]
+                 (if b
+                   (throw t)
+                   (throw (io.temporal.failure.ApplicationFailure/newNonRetryableFailureWithCause
+                           (ex-message t) (.getName (type t)) t (into-array Object []))))
+                 (if (retryable? t)
+                   (throw t)
+                   (throw (io.temporal.failure.ApplicationFailure/newNonRetryableFailureWithCause
+                           (ex-message t) (.getName (type t)) t (into-array Object [])))))))]
+     (try-rethrow* (actual-cause throwed) retryable?))))
 
 (defn ex-info-retryable
   ([msg map]
