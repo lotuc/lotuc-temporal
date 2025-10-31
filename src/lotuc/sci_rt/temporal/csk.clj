@@ -29,7 +29,7 @@
             (walk/postwalk ->one v))]
     (->all v)))
 
-(defn ->string [v]
+(defn named->string [v]
   (if (or (symbol? v) (keyword? v)) (name v) v))
 
 (defn ->keyword [v]
@@ -38,30 +38,12 @@
 (defn transform-keys [t v]
   (cske/transform-keys t (->walkable v)))
 
-(comment
-  (transform-keys csk/->kebab-case-string {:md5 "hello"}))
+(defn transform-keys->keyword [v]
+  (cske/transform-keys keyword (->walkable v)))
 
-(defn wrap-fn
-  ([f] (wrap-fn nil f))
-  ([{:keys [t-params t-result]
-     :or {t-params ->keyword
-          t-result ->string}}
-    f]
-   (fn [& params]
-     (->> (map #(transform-keys t-params %) params)
-          (apply f)
-          (transform-keys t-result)))))
+(defn transform-named->string [v]
+  (clojure.walk/postwalk named->string v))
 
 (comment
-  ((wrap-fn
-    {:t-params ->string
-     :t-result ->keyword}
-    (fn f [opts] (prn opts) opts))
-   {:hello "world"})
-
-  ((wrap-fn
-    {:t-params ->keyword
-     :t-result ->string}
-    (fn f [opts] (prn opts) opts))
-   {"hello" "world"})
-  #_())
+  (transform-keys csk/->kebab-case-string {:md5 "hello"})
+  (transform-named->string {:a 'a 'b [:b 'b "b"]}))

@@ -175,17 +175,17 @@
    (j/to-java io.temporal.activity.ActivityOptions activity-options)))
 
 (defn sci-execute-activity [activity-name & args]
-  (->> (temporal.csk/transform-keys temporal.csk/->string args)
+  (->> (temporal.csk/transform-named->string args)
        (into-array Object)
        (.execute (build-activity-stub) activity-name Object)
-       (temporal.csk/transform-keys temporal.csk/->keyword)))
+       (temporal.csk/transform-keys->keyword)))
 
 (defn sci-execute-activity-async [activity-name & args]
   (temporal.workflow.promise/promise-then
-   (->> (temporal.csk/transform-keys temporal.csk/->string args)
+   (->> (temporal.csk/transform-named->string args)
         (into-array Object)
         (.executeAsync (build-activity-stub) activity-name Object))
-   :apply (fn [v] (temporal.csk/transform-keys temporal.csk/->keyword v))))
+   :apply temporal.csk/transform-keys->keyword))
 
 (def ^{:doc "local developing"} !activity-registry (atom {}))
 

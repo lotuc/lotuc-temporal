@@ -24,11 +24,13 @@ The check is done on `actual-cause`."}
                  (if b
                    (throw t)
                    (throw (io.temporal.failure.ApplicationFailure/newNonRetryableFailureWithCause
-                           (ex-message t) (.getName (type t)) throwed (into-array Object []))))
+                           (str (ex-message t) ": " (ex-data t))
+                           (.getName (type t)) throwed (into-array Object []))))
                  (if (retryable? t)
                    (throw t)
                    (throw (io.temporal.failure.ApplicationFailure/newNonRetryableFailureWithCause
-                           (ex-message t) (.getName (type t)) throwed (into-array Object [])))))))]
+                           (str (ex-message t) ": " (ex-data t))
+                           (.getName (type t)) throwed (into-array Object [])))))))]
      (try-rethrow* (actual-cause throwed) retryable?))))
 
 (defn ex-info-retryable
@@ -54,3 +56,6 @@ The check is done on `actual-cause`."}
   (if (instance? lotuc.sci_rt.temporal.DoNotRetryExceptionInfo e)
     e
     (throw (ex-info-do-not-retry (ex-message e) (ex-data e) e))))
+
+(defn ex-with-retryable-signature? [ex]
+  (contains? (ex-data ex) :temporal/retryable))

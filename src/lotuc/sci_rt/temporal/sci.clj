@@ -5,12 +5,6 @@
    [lotuc.sci-rt.temporal.ex :as temporal.ex]
    [sci.core :as sci]))
 
-(defn sleep [n]
-  (Thread/sleep n))
-
-(defn systemTimeMillis []
-  (System/currentTimeMillis))
-
 (defn clojure-core-deref
   ([ref]
    (if (instance? io.temporal.workflow.Promise ref)
@@ -32,6 +26,8 @@
                  " msecs"))
        ret#)))
 
+(defn sleep [ms] (Thread/sleep ms))
+
 (def sci-ns-aliases
   {'temporal.activity 'lotuc.sci-rt.temporal.activity
    'temporal.workflow 'lotuc.sci-rt.temporal.workflow
@@ -48,7 +44,7 @@
      'from-java-shallow j/from-java-shallow}
     'lotuc.sci-rt.temporal.csk
     {'transform-keys temporal.csk/transform-keys
-     '->string       temporal.csk/->string
+     '->string       temporal.csk/named->string
      '->keyword      temporal.csk/->keyword}
     'lotuc.sci-rt.temporal.ex
     {'ex-info-retryable    temporal.ex/ex-info-retryable
@@ -62,6 +58,7 @@
     'clojure.core
     (cond-> {'even? even?
              'odd? odd?
+             'abs abs
              'print print
              'prn prn
              'println println

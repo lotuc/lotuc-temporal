@@ -18,8 +18,87 @@
    [(.getNamespace info) (.getWorkflowType info)
     (.getWorkflowId info) (.getRunId info)]))
 
-(defn build-sci-activity-ns [vars]
+(declare wrap-call1 wrap-call2)
+
+(defonce !sci-activity-preset-namespaces (atom nil))
+
+(defonce !sci-workflow-preset-namespaces (atom nil))
+
+(defn alter-preset-namespaces! [rt f & args]
+  (let [as (case rt
+             :workflow [!sci-workflow-preset-namespaces]
+             :activity [!sci-activity-preset-namespaces]
+             :all      [!sci-workflow-preset-namespaces !sci-activity-preset-namespaces])]
+    (doseq [!a as]
+      (apply swap! !a f args))))
+
+(defn load-preset-namespaces [rt shared-vars namespace-spec]
+  (let [preset (case rt
+                 :workflow @!sci-workflow-preset-namespaces
+                 :activity @!sci-activity-preset-namespaces)
+
+        wrap-fn (case rt
+                  :workflow
+                  #(binding [temporal.workflow/sci-vars shared-vars]
+                     (temporal.workflow/wrap-fn-with-shared-dynamic-vars-copied-out-sci %))
+                  :activity
+                  #(binding [temporal.activity/sci-vars shared-vars]
+                     (temporal.activity/wrap-fn-with-shared-dynamic-vars-copied-out-sci %)))
+
+        ns-loader
+        (letfn [(wrap-var [v]
+                  (if (let [m (meta v)] (or (:sci/macro m) (:macro m)))
+                    v
+                    (wrap-fn v)))]
+          (memoize
+           (fn ns-loader [ns-sym]
+             (let [ns-vars (get preset ns-sym)]
+               (when-not ns-vars
+                 (throw (temporal.ex/ex-info-do-not-retry
+                         "UNSUPPORTED_PRESET_NAMESPACE"
+                         {:namespace ns-sym})))
+               (memoize
+                (fn ns-var-loader
+                  ([]
+                   (reduce-kv (fn [m k v] (assoc m k (wrap-var v)))
+                              {}
+                              (if (fn? ns-vars) (ns-vars) ns-vars)))
+                  ([ns-var-sym]
+                   (if-some [v (if (fn? ns-vars)
+                                 (ns-vars ns-var-sym)
+                                 (get ns-vars ns-var-sym))]
+                     (wrap-var v)
+                     (throw (temporal.ex/ex-info-do-not-retry
+                             "UNSUPPORTED_PRESET_NAMESPACE_VAR"
+                             {:namespace ns-sym :var ns-var-sym}))))))))))
+        ns-load-vars
+        (fn ns-load [ns-loader-fn ns-vars]
+          (cond
+            (coll? ns-vars)
+            (reduce (fn [m var-sym] (assoc m var-sym (ns-loader-fn var-sym)))
+                    {}
+                    (map symbol ns-vars))
+
+            (= (symbol ns-vars) 'all)
+            (ns-loader-fn)
+
+            :else
+            (recur ns-loader-fn [ns-vars])))]
+
+    (try
+      (reduce-kv (fn [m k v] (let [ns-sym (symbol k)]
+                               (assoc m ns-sym (ns-load-vars (ns-loader ns-sym) v))))
+                 {}
+                 namespace-spec)
+      (catch Exception t
+        (if (temporal.ex/ex-with-retryable-signature? t)
+          (throw t)
+          (throw (temporal.ex/ex-info-do-not-retry
+                  "invalid namespace spec" {:namespace-spec namespace-spec})))))))
+
+(defn build-sci-activity-ns [vars namespace-spec]
   (encore/nested-merge
+   (load-preset-namespaces :activity vars namespace-spec)
    (temporal.sci/sci-default-namespaces :activity)
    {'lotuc.sci-rt.temporal.activity
     (merge
@@ -29,28 +108,20 @@
      (temporal.activity/sci-fns vars))}))
 
 (defn build-sci-workflow-ns
-  [vars]
-  (let [random (io.temporal.workflow.Workflow/newRandom)]
-    (encore/nested-merge
-     (temporal.sci/sci-default-namespaces :workflow random)
-     {'lotuc.sci-rt.temporal.workflow
-      (merge
-       ;; vars
-       vars
-       ;; fns
-       (temporal.workflow/sci-fns vars)
-       ;; macros
-       temporal.workflow/sci-macros)})))
-
-(defn build-sci-namespaces-opts [wrap-fn namespaces]
-  (into {} (for [[ns-k ns-vars] namespaces]
-             [(symbol ns-k)
-              (into {} (for [[var-k var-ref] ns-vars]
-                         [(symbol var-k)
-                          (let [v (resolve (symbol var-ref))]
-                            (if (or (fn? v) (and (var? v) (fn? @v)))
-                              (wrap-fn v)
-                              v))]))])))
+  ([vars namespace-spec] (build-sci-workflow-ns vars namespace-spec nil))
+  ([vars namespace-spec random]
+   (let [random (or random (io.temporal.workflow.Workflow/newRandom))]
+     (encore/nested-merge
+      (load-preset-namespaces :workflow vars namespace-spec)
+      (temporal.sci/sci-default-namespaces :workflow random)
+      {'lotuc.sci-rt.temporal.workflow
+       (merge
+        ;; vars
+        vars
+        ;; fns
+        (temporal.workflow/sci-fns vars)
+        ;; macros
+        temporal.workflow/sci-macros)}))))
 
 (defn string-sha256* [string]
   (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
@@ -99,14 +170,9 @@
 (defn activity-run* [opts {:keys [code params retryable-code namespaces] :as input}]
   (let [vars (temporal.activity/new-sci-vars)
         opts' (encore/nested-merge
-               {:namespaces (build-sci-activity-ns vars)
+               {:namespaces (build-sci-activity-ns vars namespaces)
                 :ns-aliases temporal.sci/sci-ns-aliases}
-               opts
-               {:namespaces
-                (build-sci-namespaces-opts
-                 #(binding [temporal.activity/sci-vars vars]
-                    (temporal.activity/wrap-fn-with-shared-dynamic-vars-copied-out-sci %))
-                 namespaces)})
+               opts)
         ctx (sci/init opts')
         ctx-readonly (delay (sci/init (assoc opts' :deny ['alter-var-root])))]
     (letfn [(retryable? [t]
@@ -130,9 +196,7 @@
 (defrecord SciActivityImpl [opts]
   SciActivity
   (sci [_ params]
-    (->> (temporal.csk/transform-keys temporal.csk/->keyword params)
-         (activity-run* (update opts :namespaces (fn [v] (if (fn? v) (v) v))))
-         (temporal.csk/transform-keys temporal.csk/->string))))
+    (wrap-call1 activity-run* opts params)))
 
 ;;; A class with stateful field will make things easier.
 ;;;
@@ -184,28 +248,26 @@
            (temporal.ex/rethrow-toplevel t (or retryable? (constantly false)))))))))
 
 (defn workflow-run* [this {:keys [code retryable-code namespaces] :as input}]
-  (let [wf-state-id      (wf-run-id)
-        _                (->> {:track-type :gc
-                               :dispose-fn #(swap! !wf-run-state dissoc wf-state-id)}
-                              (resource/track this))
+  (try
+    (let [wf-state-id      (wf-run-id)
+          _                (->> {:track-type :gc
+                                 :dispose-fn #(swap! !wf-run-state dissoc wf-state-id)}
+                                (resource/track this))
 
-        vars             (temporal.workflow/new-sci-vars)
-        opts             (encore/nested-merge
-                          {:namespaces (build-sci-workflow-ns vars)
-                           :ns-aliases temporal.sci/sci-ns-aliases}
-                          {:namespaces
-                           (build-sci-namespaces-opts
-                            #(binding [temporal.workflow/sci-vars vars]
-                               (temporal.workflow/wrap-fn-with-shared-dynamic-vars-copied-out-sci %))
-                            namespaces)})
-        ctx              (sci/init opts)
-        ctx-readonly     (sci/init (assoc opts :deny ['alter-var-root]))
-        state-map        {:input input
-                          :vars vars
-                          :ctx ctx
-                          :ctx-readonly ctx-readonly}]
-    (swap! !wf-run-state assoc wf-state-id state-map)
-    (workflow-run-sci-code! state-map {:code code :retryable-code retryable-code})))
+          vars             (temporal.workflow/new-sci-vars)
+          opts             (encore/nested-merge
+                            {:namespaces (build-sci-workflow-ns vars namespaces)
+                             :ns-aliases temporal.sci/sci-ns-aliases})
+          ctx              (sci/init opts)
+          ctx-readonly     (sci/init (assoc opts :deny ['alter-var-root]))
+          state-map        {:input input
+                            :vars vars
+                            :ctx ctx
+                            :ctx-readonly ctx-readonly}]
+      (swap! !wf-run-state assoc wf-state-id state-map)
+      (workflow-run-sci-code! state-map {:code code :retryable-code retryable-code}))
+    (catch Throwable t
+      (temporal.ex/rethrow-toplevel t))))
 
 (defn query* [{:keys [code] :as p}]
   (let [state-map (-> (get @!wf-run-state (wf-run-id))
@@ -238,60 +300,52 @@
 (defrecord SciWorkflowImpl []
   SciWorkflow
   (sciRun [this params]
-    ((temporal.csk/wrap-fn workflow-run*) this params))
+    (wrap-call1 workflow-run* this params))
   (handleQuery [_ params]
-    ((temporal.csk/wrap-fn query*) params))
+    (wrap-call1 query* params))
   (handleUpdate [_ params]
-    ((temporal.csk/wrap-fn update*) params))
+    (wrap-call1 update* params))
   (handleUpdateValidator [_ params]
-    ((temporal.csk/wrap-fn update-validator*) params))
+    (wrap-call1 update-validator* params))
   (handleUpdateSilenceOnAbandon [_ params]
-    ((temporal.csk/wrap-fn signal*) params))
+    (wrap-call1 signal* params))
   (handleUpdateSilenceOnAbandonValidator [_ params]
-    ((temporal.csk/wrap-fn update-validator*) params))
+    (wrap-call1 update-validator* params))
   (handleSignal [_ params]
-    ((temporal.csk/wrap-fn signal*) params))
+    (wrap-call1 signal* params))
   (handleSignalSilenceOnAbandon [_ params]
-    ((temporal.csk/wrap-fn signal*) params)))
+    (wrap-call1 signal* params)))
 
 (defn ^{:arglists '([^SciWorkflow wf {:keys [code retryable-code namespaces]}])
         :style/indent 1}
   sci-run!
   [^SciWorkflow wf p]
-  (->> (temporal.csk/transform-keys temporal.csk/->string p)
+  (->> (temporal.csk/transform-named->string p)
        (.sciRun wf)
-       (temporal.csk/transform-keys keyword)))
+       (temporal.csk/transform-keys->keyword)))
 
 (defn query [^SciWorkflow wf p]
-  (->> (temporal.csk/transform-keys temporal.csk/->string p)
-       (.handleQuery wf)
-       (temporal.csk/transform-keys keyword)))
+  (wrap-call2 lotuc.temporal.sci.SciWorkflow/.handleQuery wf p))
 
 (defn ^{:arglists '([^SciWorkflow wf {:keys [code validator-code]}])}
   signal!
   [^SciWorkflow wf p]
-  (->> (temporal.csk/transform-keys temporal.csk/->string p)
-       (.handleSignal wf)))
+  (wrap-call2 lotuc.temporal.sci.SciWorkflow/.handleSignal wf p))
 
 (defn ^{:arglists '([^SciWorkflow wf {:keys [code validator-code]}])}
   signal-silence-on-abandom!
   [^SciWorkflow wf p]
-  (->> (temporal.csk/transform-keys temporal.csk/->string p)
-       (.handleSignalSilenceOnAbandon wf)))
+  (wrap-call2 lotuc.temporal.sci.SciWorkflow/.handleSignalSilenceOnAbandon wf p))
 
 (defn ^{:arglists '([^SciWorkflow wf {:keys [code validator-code]}])}
   update!
   [^SciWorkflow wf p]
-  (->> (temporal.csk/transform-keys temporal.csk/->string p)
-       (.handleUpdate wf)
-       (temporal.csk/transform-keys keyword)))
+  (wrap-call2 lotuc.temporal.sci.SciWorkflow/.handleUpdate wf p))
 
 (defn ^{:arglists '([^SciWorkflow wf {:keys [code validator-code]}])}
   update-silence-on-abandom!
   [^SciWorkflow wf p]
-  (->> (temporal.csk/transform-keys temporal.csk/->string p)
-       (.handleUpdateSilenceOnAbandon wf)
-       (temporal.csk/transform-keys keyword)))
+  (wrap-call2 lotuc.temporal.sci.SciWorkflow/.handleUpdateSilenceOnAbandon wf p))
 
 (defn ^{:doc "
   workflow-stub <- workflow-client <-
@@ -337,3 +391,20 @@
   (if (= (count code-form) 1)
     (pr-str (first code-form))
     (pr-str `(do ~@code-form))))
+
+;;; Assuming all inputs on wire being serialized to JSON. When deserialize for
+;;; Clojure/SCI use, convert keys into `keyword`, when about to return to wire,
+;;; convert named (not only keys) to string.
+
+;;; The serialization logic can be enhanced & make customizable later. Now it
+;;; suits my own use cases.
+
+(defn wrap-call1 [f & args]
+  (->> (map temporal.csk/transform-keys->keyword args)
+       (apply f)
+       (temporal.csk/transform-named->string)))
+
+(defn wrap-call2 [f & args]
+  (->> (map temporal.csk/transform-named->string args)
+       (apply f)
+       (temporal.csk/transform-keys->keyword)))
