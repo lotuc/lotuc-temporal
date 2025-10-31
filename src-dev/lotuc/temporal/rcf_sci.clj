@@ -55,7 +55,7 @@
      :task-queue task-queue
      :workflow-classes [lotuc.temporal.sci.SciWorkflowImpl]
      :activity-instances
-     [(lotuc.temporal.sci.SciActivityImpl. {:namespaces {}})]}}))
+     [(lotuc.temporal.sci.SciActivityImpl. {})]}}))
 
 (defn client []
   (::client ig.repl.state/system))
@@ -182,7 +182,7 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
 (rcf/set-timeout! 1000)
 
 (defn ^{:style/indent 1} sci-run*
-  ([params] (sci-run* wf-id params))
+  ([params] (sci-run* (str (random-uuid)) params))
   ([wf-id params]
    (lotuc.temporal.sci/sci-run!
     (lotuc.temporal.sci/sci-workflow-stub (run-options wf-id))
@@ -206,8 +206,12 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
 
    (defn add2 [a b] (+ a b))
 
-   (sci-run* {:code "(user/add2 4 2)"
-              :namespaces {'user {'add2 (str `add2)}}}) := 6
+   (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+                 lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+     (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'add2 add2})
+     (sci-run* {:code "(user/add2 4 2)"
+                :namespaces {'user ["add2"]}}))
+   := 6
 
    ;; state on host env defaults be nil
    temporal.workflow/state := nil
@@ -215,15 +219,18 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
    (defn get-state [] temporal.workflow/state)
 
    (defn f []
-     (sci-run*
-      {:namespaces {'user {'get-state (str `get-state)}}
-       :code
-       #_{:clj-kondo/ignore [:unresolved-namespace]}
-       (with-sci-code
-         (temporal.sci/sleep 1000)
-         (alter-var-root #'temporal.workflow/state (fnil + 1) 41)
-         [temporal.workflow/state
-          (user/get-state)])}))
+     (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+                   lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+       (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'get-state get-state})
+       (sci-run*
+        {:namespaces {'user ["get-state"]}
+         :code
+         #_{:clj-kondo/ignore [:unresolved-var :unresolved-namespace]}
+         (with-sci-code
+           (temporal.sci/sleep 1000)
+           (alter-var-root #'temporal.workflow/state (fnil + 1) 41)
+           [temporal.workflow/state
+            (user/get-state)])})))
    ;; concurrent runs does interere with each other
    (future (rcf/tap (f)))
    (future (rcf/tap (f)))
@@ -250,9 +257,12 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
              (fn [{:keys [params code]}]
                (set-v! code)
                (= params temporal.workflow/params))))
- (sci-run* {:code code
-            :namespaces {'user {'set-v! (str `set-v!)}}
-            :params (str (random-uuid))})
+ (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+               lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+   (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'set-v! set-v!})
+   (sci-run* {:code code
+              :namespaces {'user ["set-v!"]}
+              :params (str (random-uuid))}))
  := true
  @!v := code)
 
@@ -275,7 +285,7 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
      (try (sci-run* wf-id
             {:code (with-sci-code
                      (try (time (/ 1 0))
-                          (catch Exception e
+                          (catch Exception _
                             (throw (ex-info "" {:temporal/retryable true})))))})
           (catch Throwable _)
           (finally (rcf/tap :done))))
@@ -295,22 +305,26 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
       (def wf-id (str (random-uuid)))
 
       (reset! !n 0)
-      (future (let [t0 (System/currentTimeMillis)]
-                (try (sci-run* wf-id
-                       {:namespaces {'user {'inc-n! (str `inc-n!)}}
-                        :code
-                        #_{:clj-kondo/ignore [:unresolved-namespace]}
-                        (with-sci-code
-                          (temporal.workflow/with-retry {:initialInterval [:ms 100]
-                                                         :backoffCoefficient 1
-                                                         :expiration [:sec 4]
-                                                         :maximumAttempts 3}
-                            (user/inc-n!)
-                            (/ 1 0)))})
-                     (catch Throwable t
-                       (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t)
-                                 (> (- (System/currentTimeMillis) t0) 300)
-                                 @!n])))))
+      (future
+        (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+                      lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+          (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'inc-n! inc-n!})
+          (let [t0 (System/currentTimeMillis)]
+            (try (sci-run* wf-id
+                   {:namespaces {'user ["inc-n!"]}
+                    :code
+                    #_{:clj-kondo/ignore [:unresolved-namespace]}
+                    (with-sci-code
+                      (temporal.workflow/with-retry {:initialInterval [:ms 100]
+                                                     :backoffCoefficient 1
+                                                     :expiration [:sec 4]
+                                                     :maximumAttempts 3}
+                        (user/inc-n!)
+                        (/ 1 0)))})
+                 (catch Throwable t
+                   (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t)
+                             (> (- (System/currentTimeMillis) t0) 300)
+                             @!n]))))))
       rcf/% := [true true 3]
 
       (try (terminate-workflow wf-id) (catch Throwable _))))
@@ -321,22 +335,26 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
     (def wf-id (str (random-uuid)))
 
     (reset! !n 0)
-    (future (let [t0 (System/currentTimeMillis)]
-              (try (sci-run* wf-id
-                     {:namespaces {'user {'inc-n! (str `inc-n!)}}
-                      :code
-                      #_{:clj-kondo/ignore [:unresolved-namespace]}
-                      (with-sci-code
-                        @(temporal.workflow/with-retry-async {:initialInterval [:ms 100]
-                                                              :backoffCoefficient 1
-                                                              :expiration [:sec 4]
-                                                              :maximumAttempts 3}
-                           (user/inc-n!)
-                           (/ 1 0)))})
-                   (catch Throwable t
-                     (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t)
-                               (> (- (System/currentTimeMillis) t0) 300)
-                               @!n])))))
+    (future
+      (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+                    lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+        (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'inc-n! inc-n!})
+        (let [t0 (System/currentTimeMillis)]
+          (try (sci-run* wf-id
+                 {:namespaces {'user ["inc-n!"]}
+                  :code
+                  #_{:clj-kondo/ignore [:unresolved-namespace]}
+                  (with-sci-code
+                    @(temporal.workflow/with-retry-async {:initialInterval [:ms 100]
+                                                          :backoffCoefficient 1
+                                                          :expiration [:sec 4]
+                                                          :maximumAttempts 3}
+                       (user/inc-n!)
+                       (/ 1 0)))})
+               (catch Throwable t
+                 (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t)
+                           (> (- (System/currentTimeMillis) t0) 300)
+                           @!n]))))))
     rcf/% := [true true 3]
 
     (try (terminate-workflow wf-id) (catch Throwable _)))
@@ -344,37 +362,45 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
    (rcf/tests
     "with-retry manually mark exception as non-retryable"
     (reset! !n 0)
-    (future (try (sci-run*
-                  {:namespaces {'user {'inc-n! (str `inc-n!)}}
-                   :code
-                   #_{:clj-kondo/ignore [:unresolved-namespace]}
-                   (with-sci-code
-                     (temporal.workflow/with-retry {:initialInterval [:sec 3]
-                                                    :expiration [:sec 10]}
-                       (user/inc-n!)
-                       (try (/ 1 0)
-                            (catch Exception e
-                              (throw (ex-info (ex-message e) {:temporal/retryable false} e))))))})
-                 (catch Throwable t
-                   (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t) 1]))))
+    (future
+      (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+                    lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+        (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'inc-n! inc-n!})
+        (try (sci-run*
+              {:namespaces {'user ["inc-n!"]}
+               :code
+               #_{:clj-kondo/ignore [:unresolved-namespace]}
+               (with-sci-code
+                 (temporal.workflow/with-retry {:initialInterval [:sec 3]
+                                                :expiration [:sec 10]}
+                   (user/inc-n!)
+                   (try (/ 1 0)
+                        (catch Exception e
+                          (throw (ex-info (ex-message e) {:temporal/retryable false} e))))))})
+             (catch Throwable t
+               (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t) 1])))))
     rcf/% := [true 1])
 
    (rcf/tests
     "with-retry-async manually mark exception as non-retryable"
     (reset! !n 0)
-    (future (try (sci-run*
-                  {:namespaces {'user {'inc-n! (str `inc-n!)}}
-                   :code
-                   #_{:clj-kondo/ignore [:unresolved-namespace]}
-                   (with-sci-code
-                     @(temporal.workflow/with-retry-async {:initialInterval [:sec 3]
-                                                           :expiration [:sec 10]}
-                        (user/inc-n!)
-                        (try (/ 1 0)
-                             (catch Exception e
-                               (throw (ex-info (ex-message e) {:temporal/retryable false} e))))))})
-                 (catch Throwable t
-                   (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t) 1]))))
+    (future
+      (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+                    lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+        (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'inc-n! inc-n!})
+        (try (sci-run*
+              {:namespaces {'user ["inc-n!"]}
+               :code
+               #_{:clj-kondo/ignore [:unresolved-namespace]}
+               (with-sci-code
+                 @(temporal.workflow/with-retry-async {:initialInterval [:sec 3]
+                                                       :expiration [:sec 10]}
+                    (user/inc-n!)
+                    (try (/ 1 0)
+                         (catch Exception e
+                           (throw (ex-info (ex-message e) {:temporal/retryable false} e))))))})
+             (catch Throwable t
+               (rcf/tap [(instance? io.temporal.client.WorkflowFailedException t) 1])))))
     rcf/% := [true 1])))
 
 (defn env-vars []
@@ -383,162 +409,173 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
 (rcf/tests
  "bound value is passed back to native env."
 
- (edn/read-string
-  #_{:clj-kondo/ignore [:unresolved-namespace]}
-  (sci-run*
-   {:namespaces {'sample {'env-vars (str `env-vars)}}
-    :code (with-sci-code (pr-str (sample/env-vars)))}))
- := {:activity-options {:startToCloseTimeout [:sec 60]}}
+ (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+               lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+   (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'sample {'env-vars env-vars})
 
- (edn/read-string
-  #_{:clj-kondo/ignore [:unresolved-namespace]}
-  (sci-run*
-   {:namespaces {'sample {'env-vars (str `env-vars)}}
-    :code (with-sci-code
-            (temporal.workflow/with-activity-options {:startToCloseTimeout 42}
-              (pr-str (sample/env-vars))))}))
+   (rcf/tests
+    "bound value is passed back to native env."
 
- := {:activity-options {:startToCloseTimeout 42}})
+    (edn/read-string
+     #_{:clj-kondo/ignore [:unresolved-namespace]}
+     (sci-run*
+      {:namespaces {'sample ["env-vars"]}
+       :code (with-sci-code (pr-str (sample/env-vars)))}))
+    := {:activity-options {:startToCloseTimeout [:sec 60]}}
 
-(rcf/tests
- "heartbeat"
+    (edn/read-string
+     #_{:clj-kondo/ignore [:unresolved-namespace]}
+     (sci-run*
+      {:namespaces {'sample ["env-vars"]}
+       :code (with-sci-code
+               (temporal.workflow/with-activity-options {:startToCloseTimeout 42}
+                 (pr-str (sample/env-vars))))}))
 
- (def !count (atom 0))
- (defn count-inc! [] (swap! !count inc))
+    := {:activity-options {:startToCloseTimeout 42}}
 
- (defn long-task-with-heartbeat [{:keys [hb-interval task-ms]}]
-   (let [!hb-error (atom nil)
-         ctx (temporal.activity/execution-ctx)
-         close-ch  (async/chan)
-         hb
-         (fn []
-           (async/thread
+    #_())))
+
+(with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+              lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+
+  (def !count (atom 0))
+  (defn count-inc! [] (swap! !count inc))
+
+  (defn long-task-with-heartbeat [{:keys [hb-interval task-ms]}]
+    (let [!hb-error (atom nil)
+          ctx (temporal.activity/execution-ctx)
+          close-ch  (async/chan)
+          hb
+          (fn []
+            (async/thread
              ;; (tel/log! {:msg ["heartbeat" hb-interval]})
-             (try (.heartbeat ctx "long-task")
-                  true
-                  (catch Throwable t
-                    (reset! !hb-error t)
-                    (async/close! close-ch)
-                    false))))
-         task-ch
-         (async/go
-           (async/<! (async/timeout task-ms))
-           "done")]
+              (try (.heartbeat ctx "long-task")
+                   true
+                   (catch Throwable t
+                     (reset! !hb-error t)
+                     (async/close! close-ch)
+                     false))))
+          task-ch
+          (async/go
+            (async/<! (async/timeout task-ms))
+            "done")]
 
     ;; heartbeat ch
-     (async/go-loop []
-       (when (async/alt!
-               close-ch ([_] false)
-               task-ch  ([_] false)
-               (hb)     ([v] v))
-         (async/<! (async/timeout hb-interval))
-         (recur)))
+      (async/go-loop []
+        (when (async/alt!
+                close-ch ([_] false)
+                task-ch  ([_] false)
+                (hb)     ([v] v))
+          (async/<! (async/timeout hb-interval))
+          (recur)))
 
-     (let [v (async/alt!!
-               task-ch  ([v] v)
-               close-ch ([_] "timeout"))]
-       (if-some [err @!hb-error]
-         (throw err)
-         v))))
+      (let [v (async/alt!!
+                task-ch  ([v] v)
+                close-ch ([_] "timeout"))]
+        (if-some [err @!hb-error]
+          (throw err)
+          v))))
 
- (rcf/tests
-  "normal heartbeat"
+  (lotuc.temporal.sci/alter-preset-namespaces!
+   :activity assoc 'user {'count-inc! count-inc!
+                          'long-task-with-heartbeat long-task-with-heartbeat})
 
-  (reset! !count 0)
-  (def res-timeout-test-0
-    (sci-run*
-     {:code
-      #_{:clj-kondo/ignore [:unresolved-namespace]}
-      (with-sci-code
-        (temporal.workflow/with-activity-options
-          {:retryOptions {:maximumAttempts 2}
-           :startToCloseTimeout [:sec 15]
-           :heartbeatTimeout [:ms 200]}
-          (temporal.workflow/with-sci-activity
-            {:namespaces {'user {'count-inc! (str `count-inc!)
-                                 'long-task-with-heartbeat (str `long-task-with-heartbeat)}}}
-            (user/count-inc!)
-            (user/long-task-with-heartbeat
-             {:hb-interval 100 :task-ms 1000}))))}))
-  res-timeout-test-0 := "done"
-  @!count := 1)
+  (rcf/tests
+   "normal heartbeat"
 
- (rcf/tests
-  "abnormal heartbeat"
+   (reset! !count 0)
+   (def res-timeout-test-0
+     (sci-run*
+      {:code
+       #_{:clj-kondo/ignore [:unresolved-namespace]}
+       (with-sci-code
+         (temporal.workflow/with-activity-options
+           {:retryOptions {:maximumAttempts 2}
+            :startToCloseTimeout [:sec 15]
+            :heartbeatTimeout [:ms 200]}
+           (temporal.workflow/with-sci-activity
+             {:namespaces {'user ["count-inc!" "long-task-with-heartbeat"]}}
+             (user/count-inc!)
+             (user/long-task-with-heartbeat {:hb-interval 100 :task-ms 1000}))))}))
+   res-timeout-test-0 := "done"
+   @!count := 1)
 
-  (reset! !count 0)
-  (def res-timeout-test-1
-    #_{:clj-kondo/ignore [:unresolved-namespace]}
-    (try [:ok (sci-run*
-               {:code
-                (with-sci-code
-                  (temporal.workflow/with-activity-options
-                    {:retryOptions {:maximumAttempts 2}
-                     :startToCloseTimeout [:sec 15]
-                     :heartbeatTimeout [:ms 100]}
-                    (temporal.workflow/with-sci-activity
-                      {:namespaces {'user {'count-inc! (str `count-inc!)
-                                           'long-task-with-heartbeat (str `long-task-with-heartbeat)}}}
-                      (user/count-inc!)
-                      (user/long-task-with-heartbeat
+  (rcf/tests
+   "abnormal heartbeat"
+
+   (reset! !count 0)
+   (def res-timeout-test-1
+     #_{:clj-kondo/ignore [:unresolved-namespace]}
+     (try [:ok (sci-run*
+                {:code
+                 (with-sci-code
+                   (temporal.workflow/with-activity-options
+                     {:retryOptions {:maximumAttempts 2}
+                      :startToCloseTimeout [:sec 15]
+                      :heartbeatTimeout [:ms 100]}
+                     (temporal.workflow/with-sci-activity
+                       {:namespaces {'user ["count-inc!" "long-task-with-heartbeat"]}}
+                       (user/count-inc!)
+                       (user/long-task-with-heartbeat
                        ;; 1000ms > 100ms, will cause heartbeat timeout (for this
                        ;; to be triggered stablly, increase the heartbeat
                        ;; interval)
-                       {:hb-interval 1000 :task-ms 2000}))))})]
-         (catch Throwable t [:error t])))
-  (first res-timeout-test-1) := :error
-  @!count := 2))
+                        {:hb-interval 1000 :task-ms 2000}))))})]
+          (catch Throwable t [:error t])))
+   (first res-timeout-test-1) := :error
+   @!count := 2))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Activity
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(rcf/tests
- "call activity within workflow"
+(with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+              lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+  (rcf/tests
+   "call activity within workflow"
 
- (sci-run*
-  {:code (with-sci-code
-           (temporal.workflow/execute-activity
-            "babashka/sci" {:code "(+ 4 2)"}))})
- := 6
+   (sci-run*
+    {:code (with-sci-code
+             (temporal.workflow/execute-activity
+              "babashka/sci" {:code "(+ 4 2)"}))})
+   := 6
 
- (defn add2 [a b] (+ a b))
+   (defn add2 [a b] (+ a b))
 
- ;; with params & customized namespaces
- (sci-run*
-  {:code (with-sci-code
-           (temporal.workflow/execute-activity
-            "babashka/sci"
-            {:params 4
-             :namespaces {'user {'add2 (:add2-name temporal.workflow/params)}}
-             :code "(user/add2 temporal.activity/params 2)"}))
-   ;; notice the runtime value should passed in via `params`
-   :params {:add2-name (str `add2)}})
- := 6
+    ;; customized namespaces
+   (lotuc.temporal.sci/alter-preset-namespaces! :activity assoc 'user {'add2 add2})
+   (sci-run*
+    {:code (with-sci-code
+             (temporal.workflow/execute-activity
+              "babashka/sci"
+              {:params 4
+               :namespaces {'user "add2"}
+               :code "(user/add2 temporal.activity/params 2)"}))})
+   := 6
 
- ;; a helper macro (witin workflow sci's evaluation environment)
- (sci-run*
-  {:code
-   (with-sci-code
-     (temporal.workflow/with-sci-activity
-       (+ 4 2)))})
- := 6
+   ;; a helper macro (witin workflow sci's evaluation environment)
+   (sci-run*
+    {:code
+     (with-sci-code
+       (temporal.workflow/with-sci-activity
+         (+ 4 2)))})
+   := 6
 
- (sci-run*
-  {:code
-   (with-sci-code
-     (temporal.workflow/with-sci-activity
-       {:params 4}
-       (+ temporal.activity/params 2)))})
- := 6
+   (sci-run*
+    {:code
+     (with-sci-code
+       (temporal.workflow/with-sci-activity
+         {:params 4}
+         (+ temporal.activity/params 2)))})
+   := 6
 
- ;; async execution
- (sci-run*
-  {:code
-   (with-sci-code
-     @(temporal.workflow/with-sci-activity-async {:params 4}
-        (+ temporal.activity/params 2)))})
- := 6)
+    ;; async execution
+   (sci-run*
+    {:code
+     (with-sci-code
+       @(temporal.workflow/with-sci-activity-async {:params 4}
+          (+ temporal.activity/params 2)))})
+   := 6))
 
 (binding [rcf/*timeout* 2000]
   (rcf/tests
@@ -568,149 +605,160 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
  := io.temporal.client.WorkflowFailedException)
 
 (binding [rcf/*timeout* 3000]
-  (def !m (atom {}))
-  (defn inc-v! [k] (swap! !m update k (fnil inc 0)))
+  (with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+                lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
+    (def !m (atom {}))
+    (defn inc-v! [k] (swap! !m update k (fnil inc 0)))
 
-  (rcf/tests
-   "retryable exception causes activity retries forever"
-   (def wf-id (str (random-uuid)))
-   (reset! !m {})
-   (future (try (sci-run*
-                 {:namespaces {'user {'inc-v! (str `inc-v!)}}
-                  :code (with-sci-code
-                          (inc-v! :workflow)
-                          (temporal.workflow/with-sci-activity
-                            {:namespaces (:namespaces temporal.workflow/input)}
-                            (inc-v! :activity)
-                            (throw (ex-info "" {:temporal/retryable true}))))})
-                (catch Throwable t (rcf/tap (type t)))))
-   ;; it will retry forever, here is the check
-   rcf/% := ::rcf/timeout
-   (= (:workflow @!m) 1) := true
-   (> (:activity @!m) 1) := true
-   (terminate-workflow wf-id))
+    (lotuc.temporal.sci/alter-preset-namespaces! :all assoc 'user {'inc-v! inc-v!})
 
-  (rcf/tests
-   "setup retry options manually - with `with-activity-options`"
-   (def wf-id (str (random-uuid)))
-   (reset! !m {})
-   (def !f (future (try (sci-run*
-                         {:namespaces {'user {'inc-v! (str `inc-v!)}}
-                          :code (with-sci-code
-                                  (inc-v! :workflow)
-                                  (temporal.workflow/with-activity-options
-                                    {:retryOptions {:initialInterval [:ms 100]
-                                                    :maximumAttempts 2}
-                                     :startToCloseTimeout [:sec 60]}
+    (rcf/tests
+     "retryable exception causes activity retries forever"
+     (def wf-id (str (random-uuid)))
+     (reset! !m {})
+     (future (try (sci-run*
+                   wf-id
+                    {:namespaces {'user ["inc-v!"]}
+                     :code (with-sci-code
+                             (inc-v! :workflow)
+                             (temporal.workflow/with-sci-activity
+                               {:namespaces (:namespaces temporal.workflow/input)}
+                               (inc-v! :activity)
+                               (throw (ex-info "" {:temporal/retryable true}))))})
+                  (catch Throwable t (rcf/tap (type t)))))
+     ;; it will retry forever, here is the check
+     rcf/% := ::rcf/timeout
+     (= (:workflow @!m) 1) := true
+     (> (:activity @!m) 1) := true
+     (terminate-workflow wf-id))
+
+    (rcf/tests
+     "setup retry options manually - with `with-activity-options`"
+     (def wf-id (str (random-uuid)))
+     (reset! !m {})
+     (def !f (future (try (sci-run*
+                           {:namespaces {'user ["inc-v!"]}
+                            :code (with-sci-code
+                                    (inc-v! :workflow)
+                                    (temporal.workflow/with-activity-options
+                                      {:retryOptions {:initialInterval [:ms 100]
+                                                      :maximumAttempts 2}
+                                       :startToCloseTimeout [:sec 60]}
+                                      (temporal.workflow/with-sci-activity
+                                        {:namespaces (:namespaces temporal.workflow/input)}
+                                        (inc-v! :activity)
+                                        (throw (ex-info "failed-42" {:temporal/retryable true})))))})
+                          (catch Throwable _t
+                            (rcf/tap :failed)))))
+      ;; notice here the retry should stop on 2 attempts
+     rcf/% := :failed
+     (= (:workflow @!m) 1) := true
+     (= (:activity @!m) 2) := true
+     (not= (deref !f 100 ::timeout) ::timeout) := true
+     (when (= (deref !f 100 ::timeout) ::timeout)
+       (terminate-workflow wf-id)))
+
+    (rcf/tests
+     "setup retry options manually - without `with-activity-options`"
+     (def wf-id (str (random-uuid)))
+     (reset! !m {})
+     (def !f (future (try (sci-run*
+                           {:namespaces {'user ["inc-v!"]}
+                            :code (with-sci-code
+                                    (inc-v! :workflow)
                                     (temporal.workflow/with-sci-activity
-                                      {:namespaces (:namespaces temporal.workflow/input)}
+                                      {:namespaces (:namespaces temporal.workflow/input)
+                                       :activity-options
+                                       {:retryOptions {:initialInterval [:ms 100]
+                                                       :maximumAttempts 2}
+                                        :startToCloseTimeout [:sec 60]}}
                                       (inc-v! :activity)
-                                      (throw (ex-info "failed-42" {:temporal/retryable true})))))})
-                        (catch Throwable _t
-                          (rcf/tap :failed)))))
-   ;; notice here the retry should stop on 2 attempts
-   rcf/% := :failed
-   (= (:workflow @!m) 1) := true
-   (= (:activity @!m) 2) := true
-   (not= (deref !f 100 ::timeout) ::timeout) := true
-   (when (= (deref !f 100 ::timeout) ::timeout)
-     (terminate-workflow wf-id)))
-
-  (rcf/tests
-   "setup retry options manually - without `with-activity-options`"
-   (def wf-id (str (random-uuid)))
-   (reset! !m {})
-   (def !f (future (try (sci-run*
-                         {:namespaces {'user {'inc-v! (str `inc-v!)}}
-                          :code (with-sci-code
-                                  (inc-v! :workflow)
-                                  (temporal.workflow/with-sci-activity
-                                    {:namespaces (:namespaces temporal.workflow/input)
-                                     :activity-options
-                                     {:retryOptions {:initialInterval [:ms 100]
-                                                     :maximumAttempts 2}
-                                      :startToCloseTimeout [:sec 60]}}
-                                    (inc-v! :activity)
-                                    (throw (ex-info "failed-42" {:temporal/retryable true}))))})
-                        (catch Throwable _t
-                          (rcf/tap :failed)))))
-   ;; notice here the retry should stop on 2 attempts
-   rcf/% := :failed
-   (= (:workflow @!m) 1) := true
-   (= (:activity @!m) 2) := true
-   (not= (deref !f 100 ::timeout) ::timeout) := true
-   (when (= (deref !f 100 ::timeout) ::timeout)
-     (terminate-workflow wf-id))))
+                                      (throw (ex-info "failed-42" {:temporal/retryable true}))))})
+                          (catch Throwable _t
+                            (rcf/tap :failed)))))
+      ;; notice here the retry should stop on 2 attempts
+     rcf/% := :failed
+     (= (:workflow @!m) 1) := true
+     (= (:activity @!m) 2) := true
+     (not= (deref !f 100 ::timeout) ::timeout) := true
+     (when (= (deref !f 100 ::timeout) ::timeout)
+       (terminate-workflow wf-id)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Workflow messaging
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(rcf/tests
- (def wf-id (str (random-uuid)))
- (def !n (atom 0))
- (defn inc-n! [n] (swap! !n + n))
- (def !f (future (sci-run* wf-id
-                   {:code (with-sci-code
-                            (temporal.workflow/wait-condition
-                             (fn [] (:done? temporal.workflow/state)))
-                            (:n temporal.workflow/state))
-                    :namespaces {'user {'inc-n! (str `inc-n!)}}})))
+(with-redefs [lotuc.temporal.sci/!sci-activity-preset-namespaces (atom {})
+              lotuc.temporal.sci/!sci-workflow-preset-namespaces (atom {})]
 
- ;; wait for ready
- (Thread/sleep 600)
+  (rcf/tests
+   (def wf-id (str (random-uuid)))
+   (def !n (atom 0))
+   (defn inc-n! [n] (swap! !n + n))
 
- (def stub (lotuc.temporal.sci/sci-workflow-stub (message-options wf-id)))
+   (lotuc.temporal.sci/alter-preset-namespaces! :workflow assoc 'user {'inc-n! inc-n!})
 
- (reset! !n 0)
- ;; action params can be retrieved from `temporal.workflow/action-params`
- (def update-code
-   (with-sci-code
-     (let [n temporal.workflow/action-params]
-       (inc-n! n)
-       (alter-var-root #'temporal.workflow/state update :n (fnil + 0) n))
-     (:n temporal.workflow/state)))
- (def query-code
-   (with-sci-code
-     (:n temporal.workflow/state)))
- (def signal-done-code
-   (with-sci-code
-     (alter-var-root #'temporal.workflow/state assoc :done? true)))
+   (def !f (future (sci-run* wf-id
+                     {:code (with-sci-code
+                              (temporal.workflow/wait-condition
+                               (fn [] (:done? temporal.workflow/state)))
+                              (:n temporal.workflow/state))
+                      :namespaces {'user ["inc-n!"]}})))
 
- (lotuc.temporal.sci/update! stub {:code update-code :params 1}) := 1
- @!n = 1
- (lotuc.temporal.sci/query stub {:code query-code}) := 1
+    ;; wait for ready
+   (Thread/sleep 600)
 
- (lotuc.temporal.sci/update-silence-on-abandom! stub {:code update-code :params 41}) := 42
- @!n = 42
- (lotuc.temporal.sci/query stub {:code query-code}) := 42
+   (def stub (lotuc.temporal.sci/sci-workflow-stub (message-options wf-id)))
 
- (lotuc.temporal.sci/signal! stub {:code signal-done-code})
- @!f = 42
+   (reset! !n 0)
+    ;; action params can be retrieved from `temporal.workflow/action-params`
+   (def update-code
+     (with-sci-code
+       (let [n temporal.workflow/action-params]
+         (inc-n! n)
+         (alter-var-root #'temporal.workflow/state update :n (fnil + 0) n))
+       (:n temporal.workflow/state)))
+   (def query-code
+     (with-sci-code
+       (:n temporal.workflow/state)))
+   (def signal-done-code
+     (with-sci-code
+       (alter-var-root #'temporal.workflow/state assoc :done? true)))
 
- ;; you can query when workflow is done, it will replay your code
- (reset! !n 0)
- (lotuc.temporal.sci/query stub {:code query-code}) := 42
- @!n = 42
+   (lotuc.temporal.sci/update! stub {:code update-code :params 1}) := 1
+   @!n = 1
+   (lotuc.temporal.sci/query stub {:code query-code}) := 1
 
- (reset! !n 0)
- (def query-code-with-parmas
-   (with-sci-code
-     (+ temporal.workflow/action-params (:n temporal.workflow/state))))
- (->> {:code query-code-with-parmas :params 24}
-      (lotuc.temporal.sci/query stub))
- := 66
+   (lotuc.temporal.sci/update-silence-on-abandom! stub {:code update-code :params 41}) := 42
+   @!n = 42
+   (lotuc.temporal.sci/query stub {:code query-code}) := 42
 
- (def !f (future (sci-run* wf-id
-                   {:code (with-sci-code
-                            (temporal.workflow/wait-condition
-                             (fn [] (:done? temporal.workflow/state)))
-                            (:n temporal.workflow/state))})))
- (Thread/sleep 600)
- ;; this signal function also works
- (lotuc.temporal.sci/signal-silence-on-abandom! stub {:code signal-done-code})
- @!f = nil
- #_())
+   (lotuc.temporal.sci/signal! stub {:code signal-done-code})
+   @!f = 42
+
+    ;; you can query when workflow is done, it will replay your code
+   (reset! !n 0)
+   (lotuc.temporal.sci/query stub {:code query-code}) := 42
+   @!n = 42
+
+   (reset! !n 0)
+   (def query-code-with-parmas
+     (with-sci-code
+       (+ temporal.workflow/action-params (:n temporal.workflow/state))))
+   (->> {:code query-code-with-parmas :params 24}
+        (lotuc.temporal.sci/query stub))
+   := 66
+
+   (def !f (future (sci-run* wf-id
+                     {:code (with-sci-code
+                              (temporal.workflow/wait-condition
+                               (fn [] (:done? temporal.workflow/state)))
+                              (:n temporal.workflow/state))})))
+   (Thread/sleep 600)
+    ;; this signal function also works
+   (lotuc.temporal.sci/signal-silence-on-abandom! stub {:code signal-done-code})
+   @!f = nil
+   #_()))
 
 (rcf/tests
  (def wf-id (str (random-uuid)))
