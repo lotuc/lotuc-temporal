@@ -11,7 +11,6 @@
    [lotuc.sci-rt.temporal.sci :as temporal.sci]
    [lotuc.sci-rt.temporal.workflow :as temporal.workflow]
    [lotuc.temporal.sci :refer [with-sci-code]]
-   [sci.core :as sci]
    [taoensso.telemere :as tel]))
 
 (defmethod ig/init-key ::service-stubs [_ _]
@@ -843,3 +842,19 @@
 
    rcf/% := 3
    rcf/% := 3))
+
+(rcf/tests
+ "upsert search attributes"
+
+  ;; the temporal deployment should support visiblity store, and the attribute
+  ;; should be created, like
+  ;;    temporal operator search-attribute create --name='sci-code' --type='Keyword'
+  ;;
+  ;; https://docs.temporal.io/self-hosted-guide/visibility
+ (sci-run*
+  {:code (with-sci-code
+           (temporal.workflow/upsert-search-attributes {:sci-code :demo})
+           (temporal.sci/sleep 10000)
+           (temporal.workflow/upsert-search-attributes {:sci-code [:unset :keyword]})
+           42)})
+ := 42)

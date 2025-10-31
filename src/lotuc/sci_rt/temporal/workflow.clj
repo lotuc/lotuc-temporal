@@ -71,6 +71,56 @@
 (defn workflow-info []
   (j/from-java (io.temporal.workflow.Workflow/getInfo)))
 
+(defn ->search-attributes [attrs]
+  (for [[k v] attrs
+        :let [k (if (instance? clojure.lang.Named k) (name k) k)]]
+    (cond
+      (and (coll? v) (= (first v) :unset))
+      (.valueUnset
+       (case (second v)
+         :text             (io.temporal.common.SearchAttributeKey/forText k)
+         :keyword          (io.temporal.common.SearchAttributeKey/forKeyword k)
+         :keyword-list     (io.temporal.common.SearchAttributeKey/forKeywordList k)
+         (:int :long)      (io.temporal.common.SearchAttributeKey/forLong k)
+         (:double :float)  (io.temporal.common.SearchAttributeKey/forDouble k)
+         (:boolean :bool)  (io.temporal.common.SearchAttributeKey/forBoolean k)
+         :offset-date-time (io.temporal.common.SearchAttributeKey/forOffsetDateTime k)))
+
+      (string? v)
+      (-> (io.temporal.common.SearchAttributeKey/forText k)
+          (.valueSet v))
+
+      (keyword? v)
+      (-> (io.temporal.common.SearchAttributeKey/forKeyword k)
+          (.valueSet (name v)))
+
+      (coll? v)
+      (-> (io.temporal.common.SearchAttributeKey/forKeywordList k)
+          (.valueSet (map #(if (instance? clojure.lang.Named %) (name %) (str %)) v)))
+
+      (int? v)
+      (-> (io.temporal.common.SearchAttributeKey/forLong k)
+          (.valueSet (long v)))
+
+      (or (double? v) (float? v))
+      (-> (io.temporal.common.SearchAttributeKey/forDouble k)
+          (.valueSet (double v)))
+
+      (boolean? v)
+      (-> (io.temporal.common.SearchAttributeKey/forBoolean k)
+          (.valueSet (double v)))
+
+      (instance? java.time.OffsetDateTime v)
+      (-> (io.temporal.common.SearchAttributeKey/forOffsetDateTime k)
+          (.valueSet ^java.time.OffsetDateTime v))
+
+      :else (throw (ex-info "cannot convert to search attributes"
+                            {:attrs attrs :k k :v v})))))
+
+(defn upsert-search-attributes [attrs]
+  (io.temporal.workflow.Workflow/upsertTypedSearchAttributes
+   (into-array io.temporal.common.SearchAttributeUpdate (->search-attributes attrs))))
+
 (defn sci-wait-condition
   ([duration block-condition]
    (io.temporal.workflow.Workflow/await
@@ -344,21 +394,22 @@
 
 (defn sci-fns [sci-vars*]
   (binding [sci-vars sci-vars*]
-    (->> {'async-call-function    sci-async-call-function
-          'async-call-procedure   sci-async-call-procedure
+    (->> {'async-call-function      sci-async-call-function
+          'async-call-procedure     sci-async-call-procedure
 
-          'promise-completed?     temporal.workflow.promise/promise-completed?
-          'promise-get-failure    temporal.workflow.promise/promise-get-failure
-          'promise-get            temporal.workflow.promise/promise-get
-          'promise-then           temporal.workflow.promise/promise-then
-          'promise-all-of         temporal.workflow.promise/promise-all-of
-          'promise-any-of         temporal.workflow.promise/promise-any-of
+          'promise-completed?       temporal.workflow.promise/promise-completed?
+          'promise-get-failure      temporal.workflow.promise/promise-get-failure
+          'promise-get              temporal.workflow.promise/promise-get
+          'promise-then             temporal.workflow.promise/promise-then
+          'promise-all-of           temporal.workflow.promise/promise-all-of
+          'promise-any-of           temporal.workflow.promise/promise-any-of
 
-          'execute-activity       sci-execute-activity
-          'execute-activity-async sci-execute-activity-async
-          'retry                  sci-retry
-          'retry-async            sci-retry-async
-          'wait-condition         sci-wait-condition}
+          'execute-activity         sci-execute-activity
+          'execute-activity-async   sci-execute-activity-async
+          'retry                    sci-retry
+          'retry-async              sci-retry-async
+          'wait-condition           sci-wait-condition
+          'upsert-search-attributes upsert-search-attributes}
          (reduce-kv
           (fn [m k v]
             (assoc m k (wrap-fn-with-shared-dynamic-vars-copied-out-sci v)))
