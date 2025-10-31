@@ -1,4 +1,4 @@
-(ns lotuc.sample.temporal.sample07-sci-102
+(ns lotuc.temporal.rcf-sci
   (:require
    [clojure.core.async :as async]
    [clojure.edn :as edn]
@@ -6,7 +6,6 @@
    [integrant.core :as ig]
    [integrant.repl :as ig.repl]
    [integrant.repl.state :as ig.repl.state]
-   [lotuc.sample.temporal.common :as common]
    [lotuc.sci-rt.temporal.activity :as temporal.activity]
    [lotuc.sci-rt.temporal.ex :as temporal.ex]
    [lotuc.sci-rt.temporal.sci :as temporal.sci]
@@ -15,20 +14,54 @@
    [sci.core :as sci]
    [taoensso.telemere :as tel]))
 
-(def task-queue "hello")
+(defmethod ig/init-key ::service-stubs [_ _]
+  (io.temporal.serviceclient.WorkflowServiceStubs/newLocalServiceStubs))
+
+(defmethod ig/init-key ::client [_ {:keys [service-stubs]}]
+  (io.temporal.client.WorkflowClient/newInstance service-stubs))
+
+(defmethod ig/init-key ::worker
+  [_ {:keys [client task-queue workflow-classes activity-instances
+             ^io.temporal.worker.WorkerOptions worker-options]}]
+  (let [worker-factory (io.temporal.worker.WorkerFactory/newInstance client)
+        worker (if worker-options
+                 (.newWorker worker-factory task-queue worker-options)
+                 (.newWorker worker-factory task-queue))]
+    (tel/log! ["start worker for queue:" task-queue])
+    (when (seq workflow-classes)
+      (->> (into-array Class workflow-classes)
+           (.registerWorkflowImplementationTypes worker)))
+    (when (seq activity-instances)
+      (->> (into-array Object activity-instances)
+           (.registerActivitiesImplementations worker)))
+    (.start worker-factory)
+    {:client client :worker worker :worker-factory worker-factory}))
+
+(defmethod ig/halt-key! ::worker [_ {:keys [worker-factory]}]
+  (when worker-factory
+    (.shutdown worker-factory)
+    (while (not (.isTerminated worker-factory))
+      (tel/log! ["terminating worker"])
+      (.awaitTermination worker-factory 1 java.util.concurrent.TimeUnit/SECONDS))))
+
+(def task-queue "rcf-sci")
 
 (ig.repl/set-prep!
  #(ig/expand
-   {:sample/default-client {}
-    :sample/worker
-    {:client (ig/ref :sample/default-client)
+   {::service-stubs {}
+    ::client {:service-stubs (ig/ref ::service-stubs)}
+    ::worker
+    {:client (ig/ref ::client)
      :task-queue task-queue
      :workflow-classes [lotuc.temporal.sci.SciWorkflowImpl]
      :activity-instances
      [(lotuc.temporal.sci.SciActivityImpl. {:namespaces {}})]}}))
 
 (defn client []
-  (:sample/default-client ig.repl.state/system))
+  (::client ig.repl.state/system))
+
+(defn service-stubs []
+  (::service-stubs ig.repl.state/system))
 
 (defn terminate-workflow [id]
   (.terminate (io.temporal.client.WorkflowClient/.newUntypedWorkflowStub (client) id)
@@ -38,15 +71,12 @@
   ([]
    (run-options (str (random-uuid))))
   ([wf-id]
-   ;; debug
-   #_{:clj-kondo/ignore [:inline-def]}
-   (def wf-id wf-id)
-   {:workflow-service-stubs @common/+default-service-stubs+
+   {:workflow-service-stubs (service-stubs)
     :workflow-options {:taskQueue task-queue :workflowId wf-id}}))
 
 (defn message-options
   ([wf-id]
-   {:workflow-service-stubs @common/+default-service-stubs+
+   {:workflow-service-stubs (service-stubs)
     :workflow-id wf-id}))
 
 (rcf/enable!)
