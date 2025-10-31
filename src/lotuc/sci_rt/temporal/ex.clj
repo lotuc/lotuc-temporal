@@ -45,6 +45,26 @@ The check is done on `actual-cause`."}
   ([msg map cause]
    (lotuc.sci_rt.temporal.DoNotRetryExceptionInfo. msg map cause)))
 
+(defn ^{:doc "continue as new.
+
+  wrap exception with `ex-info-retryable` is an implementation detail. which
+  make sure exception pops up to top level without transforming to ApplicationFailure.
+
+  ex-data `:temporal/continue-as-new` being `true` can be considered a reliable
+  sign which marks the continue as new exception."}
+  ex-continue-as-new
+  ([params]
+   (ex-info-retryable
+    "continue as new"
+    {:temporal/continue-as-new true
+     :params params
+     :state @(resolve 'lotuc.sci-rt.temporal.workflow/state)}))
+  ([]
+   (ex-info-retryable
+    "continue as new"
+    {:temporal/continue-as-new true
+     :state @(resolve 'lotuc.sci-rt.temporal.workflow/state)})))
+
 (defn ^{:doc "Build an ex of type `RetryableExceptionInfo`"}
   ->ex-info-retryable [e]
   (if (instance? lotuc.sci_rt.temporal.RetryableExceptionInfo e)

@@ -32,7 +32,8 @@
   {'temporal.activity 'lotuc.sci-rt.temporal.activity
    'temporal.workflow 'lotuc.sci-rt.temporal.workflow
    'temporal.csk      'lotuc.sci-rt.temporal.csk
-   'temporal.sci      'lotuc.sci-rt.temporal.sci})
+   'temporal.sci      'lotuc.sci-rt.temporal.sci
+   'temporal.ex       'lotuc.sci-rt.temporal.ex})
 
 (defn sci-default-namespaces
   ([env] (sci-default-namespaces env nil))
@@ -48,7 +49,8 @@
      '->keyword      temporal.csk/->keyword}
     'lotuc.sci-rt.temporal.ex
     {'ex-info-retryable    temporal.ex/ex-info-retryable
-     'ex-info-do-not-retry temporal.ex/ex-info-do-not-retry}
+     'ex-info-do-not-retry temporal.ex/ex-info-do-not-retry
+     'ex-continue-as-new   temporal.ex/ex-continue-as-new}
     'lotuc.sci-rt.temporal.sci
     (cond-> {'sleep            Thread/sleep
              'systemTimeMillis System/currentTimeMillis}

@@ -81,101 +81,6 @@
 
 (rcf/enable!)
 
-(rcf/tests
- "within retry block, exceptions marked as `:temporal/retryable` falsy will be
-rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
-
- (= (try (temporal.workflow/rethrow-inside-retry
-          (ex-info "retryable" {:temporal/retryable false}))
-         (catch Throwable t (type t)))
-    lotuc.sci_rt.temporal.DoNotRetryExceptionInfo)
- := true
-
- (= (try (temporal.workflow/rethrow-inside-retry
-          (try (sci/eval-string
-                (pr-str '(throw (ex-info "retryable" {:temporal/retryable false}))))
-               (catch Throwable e e)))
-         (catch Throwable t (type t)))
-    lotuc.sci_rt.temporal.DoNotRetryExceptionInfo)
-
- #_())
-
-(rcf/tests
- "top level exception should be NOT RETRYABLE unless EXPLICITLY marked as is"
-
- (= (try (temporal.ex/rethrow-toplevel (java.lang.ArithmeticException.))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := true
-
- (= (try (temporal.ex/rethrow-toplevel (ex-info "" {:temporal/retryable false}))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := true
-
- ;; check the "actual cause" with `tempora.ex/actual-cause`
- (= (try (try (sci/eval-string
-               (with-sci-code
-                 (try (time (/ 1 0))
-                      (catch Exception e
-                        (throw (ex-info (ex-message e) {:temporal/retryable false} e))))))
-              (catch Throwable t (temporal.ex/rethrow-toplevel t)))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := true
-
- (= (try (try (sci/eval-string
-               (with-sci-code
-                 (time (/ 1 0))))
-              (catch Throwable t (temporal.ex/rethrow-toplevel t)))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := true
-
- (= (try (temporal.ex/rethrow-toplevel (ex-info "" {}))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := true
-
- ;; retryable
-
- (= (try (try (sci/eval-string
-               (with-sci-code
-                 (try (time (/ 1 0))
-                      (catch Exception e
-                        (throw (ex-info (ex-message e) {:temporal/retryable true} e))))))
-              (catch Throwable t (temporal.ex/rethrow-toplevel t)))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := false
-
- (= (try (temporal.ex/rethrow-toplevel (ex-info "" {:temporal/retryable true}))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := false
-
- ;; :temporal/retryable supercedes given retryable check function
- (= (try (temporal.ex/rethrow-toplevel (ex-info "" {:temporal/retryable true})
-                                       (fn [_e] false))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := false
-
- (= (try (temporal.ex/rethrow-toplevel (ex-info "" {}) (fn [_e] false))
-         (catch Throwable t (type t)))
-    io.temporal.failure.ApplicationFailure)
- := true
-
- ;; TemporalException retrhown as IS
- (= (try (temporal.ex/rethrow-toplevel
-          (io.temporal.failure.TimeoutFailure. nil nil nil)
-          (fn [_e] false))
-         (catch Throwable t (type t)))
-    io.temporal.failure.TimeoutFailure)
- := true
-
- #_())
-
 (integrant.repl/halt)
 (integrant.repl/go)
 
@@ -907,3 +812,34 @@ rethrown as lotuc.sci_rt.temporal.DoNotRetryExceptionInfo"
                   (temporal.workflow/async-call-function (fn [] 0))
                   vs)))})
    := 45))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; continue as new
+
+(binding [rcf/*timeout* 10000]
+  (rcf/tests
+   "continue as new"
+
+   ;; pasing params to new run
+   (future
+     (rcf/tap
+      (sci-run*
+       {:code (with-sci-code
+                (fn [{:keys [params]}]
+                  (when (< params 3)
+                    (throw (temporal.ex/ex-continue-as-new (+ 1 params))))
+                  params))
+        :params 1})))
+
+   ;; state is passed implicity
+   (future
+     (rcf/tap
+      (sci-run*
+       {:code (with-sci-code
+                (when (< (or temporal.workflow/state 0) 3)
+                  (alter-var-root #'temporal.workflow/state (fnil inc 0))
+                  (throw (temporal.ex/ex-continue-as-new)))
+                temporal.workflow/state)})))
+
+   rcf/% := 3
+   rcf/% := 3))

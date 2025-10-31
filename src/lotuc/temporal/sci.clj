@@ -247,27 +247,35 @@
          (catch Throwable t
            (temporal.ex/rethrow-toplevel t (or retryable? (constantly false)))))))))
 
-(defn workflow-run* [this {:keys [code retryable-code namespaces] :as input}]
-  (try
-    (let [wf-state-id      (wf-run-id)
-          _                (->> {:track-type :gc
-                                 :dispose-fn #(swap! !wf-run-state dissoc wf-state-id)}
-                                (resource/track this))
-
-          vars             (temporal.workflow/new-sci-vars)
-          opts             (encore/nested-merge
-                            {:namespaces (build-sci-workflow-ns vars namespaces)
-                             :ns-aliases temporal.sci/sci-ns-aliases})
-          ctx              (sci/init opts)
-          ctx-readonly     (sci/init (assoc opts :deny ['alter-var-root]))
-          state-map        {:input input
-                            :vars vars
-                            :ctx ctx
-                            :ctx-readonly ctx-readonly}]
-      (swap! !wf-run-state assoc wf-state-id state-map)
-      (workflow-run-sci-code! state-map {:code code :retryable-code retryable-code}))
-    (catch Throwable t
-      (temporal.ex/rethrow-toplevel t))))
+(defn workflow-run* [this {:keys [code retryable-code state namespaces] :as input}]
+  (let [vars (temporal.workflow/new-sci-vars)]
+    (when state (sci/alter-var-root ('state vars) (constantly state)))
+    (try
+      (let [wf-state-id      (wf-run-id)
+            _                (->> {:track-type :gc
+                                   :dispose-fn #(swap! !wf-run-state dissoc wf-state-id)}
+                                  (resource/track this))
+            opts             (encore/nested-merge
+                              {:namespaces (build-sci-workflow-ns vars namespaces)
+                               :ns-aliases temporal.sci/sci-ns-aliases})
+            ctx              (sci/init opts)
+            ctx-readonly     (sci/init (assoc opts :deny ['alter-var-root]))
+            state-map        {:input input
+                              :vars vars
+                              :ctx ctx
+                              :ctx-readonly ctx-readonly}]
+        (swap! !wf-run-state assoc wf-state-id state-map)
+        (workflow-run-sci-code! state-map {:code code :retryable-code retryable-code}))
+      (catch Throwable t
+        (let [d (ex-data t)]
+          (if (:temporal/continue-as-new d)
+            (do (io.temporal.workflow.Workflow/continueAsNew
+                 (into-array Object [(temporal.csk/transform-named->string
+                                      (merge
+                                       (assoc input :state @('state vars))
+                                       (select-keys d [:params])))]))
+                nil)
+            (temporal.ex/rethrow-toplevel t)))))))
 
 (defn query* [{:keys [code] :as p}]
   (let [state-map (-> (get @!wf-run-state (wf-run-id))
