@@ -1,8 +1,8 @@
 (ns lotuc.sample.temporal.sample07-sci
   (:require
-   [camel-snake-kebab.core :as csk]
    [integrant.core :as ig]
    [integrant.repl :as ig.repl]
+   [lotuc.camel-snake-kebab.core :as csk]
    [lotuc.sample.temporal.common :as common]
    [lotuc.temporal.csk :as temporal.csk]
    [sci.core :as sci]
