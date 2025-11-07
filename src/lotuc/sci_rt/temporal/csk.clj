@@ -20,6 +20,7 @@
 (defn ->walkable [v]
   (letfn [(->one [v]
             (cond
+              (instance? clojure.lang.IRecord v) (into {} v)
               (walkable? v) v
               (instance? java.util.List v) (->all (into [] v))
               (instance? java.util.Map v) (->all (into {} v))
@@ -42,7 +43,7 @@
   (cske/transform-keys keyword (->walkable v)))
 
 (defn transform-named->string [v]
-  (clojure.walk/postwalk named->string v))
+  (clojure.walk/postwalk named->string (->walkable v)))
 
 (comment
   (transform-keys csk/->kebab-case-string {:md5 "hello"})
