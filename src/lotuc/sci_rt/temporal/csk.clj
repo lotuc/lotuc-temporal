@@ -1,8 +1,8 @@
 (ns lotuc.sci-rt.temporal.csk
   (:require
-   [camel-snake-kebab.core :as csk]
-   [camel-snake-kebab.extras :as cske]
-   [clojure.walk :as walk]))
+   [clojure.walk :as walk]
+   [lotuc.camel-snake-kebab.core :as csk]
+   [lotuc.camel-snake-kebab.extras :as cske]))
 
 ;;; compile time check
 (assert (= :md5 (csk/->kebab-case-keyword "md5")))

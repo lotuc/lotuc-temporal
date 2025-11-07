@@ -4,9 +4,9 @@
         org.babashka/sci {:mvn/version "0.10.49"}
         techascent/tech.resource {:mvn/version "5.09"}
         com.taoensso/encore {:mvn/version "3.157.0"}
-        camel-snake-kebab/camel-snake-kebab
+        org.lotuc/camel-snake-kebab
         {:git/url "https://github.com/lotuc/camel-snake-kebab.git"
-         :git/sha "2a56abb04971bfc18db2a87913f18649eb319999"}}
+         :git/sha "cde3748664be3c1b2e6b4bfb6a0dc7ae346f5fac"}}
  :aliases
  {:dev
   {:extra-paths ["src-dev" "src-sample"]
