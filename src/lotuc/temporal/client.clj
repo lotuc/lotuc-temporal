@@ -1,11 +1,11 @@
-(ns lotuc.temporal.serviceclient
+(ns lotuc.temporal.client
   (:require
    [clojure.java.data :as j]
    [lotuc.temporal.java-data-builder :as j.builder]))
 
 (set! *warn-on-reflection* true)
 
-(defn new-service-stubs
+(defn new-workflow-service-stubs
   (^io.temporal.serviceclient.WorkflowServiceStubs
    []
    (io.temporal.serviceclient.WorkflowServiceStubs/newLocalServiceStubs))
@@ -35,7 +35,8 @@
        io.temporal.client.WorkflowClientOptions$Builder
        (io.temporal.client.WorkflowClientOptions/newBuilder)
        options
-       {:valid-setter-return-type? #{io.temporal.serviceclient.ServiceStubsOptions$Builder}})
+       {:valid-setter-return-type? #{io.temporal.serviceclient.ServiceStubsOptions$Builder}
+        :build-fn "validateAndBuildWithDefaults"})
       (j/to-java io.temporal.client.WorkflowClientOptions options)))))
 
 (defn new-workflow-stub
