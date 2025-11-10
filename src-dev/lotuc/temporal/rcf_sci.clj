@@ -104,6 +104,40 @@
 
  (sci-run* {:code (with-sci-code (+ 4 2))}) := 6)
 
+(rcf/tests
+ "customized code loader"
+
+ (def code "(+ 4 2)")
+ (def code-sha256 (lotuc.temporal.sci/string-sha256* code))
+
+ (with-redefs [lotuc.temporal.sci/!sci-code-loaders (atom {})]
+   (try (sci-run* {:code {:loader-name "custom-loader"
+                          :some-code code}})
+        (catch Exception e
+          (some? (re-matches #".*code loader not registered.*custom-loader.*"
+                             (ex-message (ex-cause e)))))))
+ := true
+
+ (with-redefs [lotuc.temporal.sci/!sci-code-loaders (atom {})]
+   (lotuc.temporal.sci/alter-code-loader! "custom-loader" (fn [{:keys [some-code]}] some-code))
+   ;; For customized loader, the sha256 is optional. It might implement its own
+    ;; verification logic.
+   (sci-run* {:code {:loader-name "custom-loader" :some-code code}}))
+ := 6
+
+ (with-redefs [lotuc.temporal.sci/!sci-code-loaders (atom {})]
+   (lotuc.temporal.sci/alter-code-loader! "custom-loader" (fn [{:keys [some-code]}] some-code))
+   (sci-run* {:code {:loader-name "custom-loader" :some-code code :sha256 code-sha256}}))
+ := 6
+
+ (with-redefs [lotuc.temporal.sci/!sci-code-loaders (atom {})]
+   (lotuc.temporal.sci/alter-code-loader! "custom-loader" (fn [{:keys [some-code]}] some-code))
+   (try (sci-run* {:code {:loader-name "custom-loader" :some-code code
+                          :sha256 "some make up sha256"}})
+        (catch Exception e
+          (boolean (re-matches #".*sha256 check failed.*" (ex-message (ex-cause e)))))))
+ := true)
+
 (binding [rcf/*timeout* 2000]
   (rcf/tests
    "dynamically load namesapces"

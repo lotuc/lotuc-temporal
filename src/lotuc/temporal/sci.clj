@@ -24,6 +24,11 @@
 
 (defonce !sci-workflow-preset-namespaces (atom nil))
 
+(defonce !sci-code-loaders (atom {}))
+
+(defn alter-code-loader! [loader-name code-loader]
+  (swap! !sci-code-loaders assoc loader-name code-loader))
+
 (defn alter-preset-namespaces! [rt f & args]
   (let [as (case rt
              :workflow [!sci-workflow-preset-namespaces]
@@ -131,20 +136,24 @@
 (defn load-sci-code [code]
   (if (string? code)
     code
-    (let [{:keys [code-path sha256]} code]
-      (when (not code-path)
-        (throw (temporal.ex/ex-info-do-not-retry "invalid sci code" {:code code})))
-      (when (not sha256)
-        (throw (temporal.ex/ex-info-do-not-retry "sha256 is required for code-path" {:code code})))
-      (let [code (try (or (some-> (io/resource code-path) (slurp))
-                          (slurp (io/file code-path)))
-                      (catch Throwable _
-                        (throw (temporal.ex/ex-info-do-not-retry
-                                "failed loading code" {:code code}))))]
-        (when-not (= (string-sha256* code) sha256)
-          (throw (temporal.ex/ex-info-do-not-retry
-                  "sha256 check failed" {:code code})))
-        code))))
+    (let [{:keys [loader-name code-path sha256]} code
+          loaded-code
+          (if loader-name
+            (if-some [loader (get @!sci-code-loaders loader-name)]
+              (loader code)
+              (throw (temporal.ex/ex-info-do-not-retry "code loader not registered" {:code code})))
+            (do (when (not code-path)
+                  (throw (temporal.ex/ex-info-do-not-retry "invalid sci code" {:code code})))
+                (when (not sha256)
+                  (throw (temporal.ex/ex-info-do-not-retry "sha256 is required for code-path" {:code code})))
+                (try (or (some-> (io/resource code-path) (slurp))
+                         (slurp (io/file code-path)))
+                     (catch Throwable _
+                       (throw (temporal.ex/ex-info-do-not-retry "failed loading code" {:code code}))))))]
+      (when sha256
+        (when-not (= (string-sha256* loaded-code) sha256)
+          (throw (temporal.ex/ex-info-do-not-retry "sha256 check failed" {:code code}))))
+      loaded-code)))
 
 (definterface ^{io.temporal.activity.ActivityInterface []}
   SciActivity
