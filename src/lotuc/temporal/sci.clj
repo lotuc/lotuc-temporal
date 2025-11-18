@@ -197,7 +197,12 @@
              (temporal.activity/with-shared-dynamic-vars-bound-to-sci-vars*
                {'input input
                 'params params}
-               (sci/eval-string* ctx (load-sci-code code))))
+               (let [r (sci/eval-string* ctx (load-sci-code code))]
+                 (if-some [f (if (fn? r) r
+                                 (when (instance? sci.lang.Var r)
+                                   (when (fn? @r) @r)))]
+                   (f input)
+                   r))))
            (catch Throwable t
              (temporal.ex/rethrow-toplevel t retryable?))))))
 

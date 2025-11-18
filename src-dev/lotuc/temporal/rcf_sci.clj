@@ -507,7 +507,17 @@
          (+ temporal.activity/params 2)))})
    := 6
 
-    ;; async execution
+   ;; activity code returns a activity function
+   (sci-run*
+    {:code
+     (with-sci-code
+       (temporal.workflow/with-sci-activity
+         {:params 4}
+         (fn [{:keys [params]}]
+           (+ params 2))))})
+   := 6
+
+   ;; async execution
    (sci-run*
     {:code
      (with-sci-code
