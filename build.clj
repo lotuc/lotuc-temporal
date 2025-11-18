@@ -15,12 +15,19 @@
 (defn clean [_]
   (b/delete {:path "target"}))
 
+(defn javac [_]
+  (b/javac {:basis basis
+            :src-dirs ["src"]
+            :class-dir class-dir
+            :javac-opts ["-source" "8" "-target" "8"]}))
+
 (defn jar [_]
   (b/write-pom {:class-dir class-dir
                 :lib lib
                 :version version
                 :basis basis
                 :src-dirs ["src"]})
+  (javac _)
   (b/copy-dir {:src-dirs ["src" "resources"]
                :target-dir class-dir})
   (b/jar {:class-dir class-dir
@@ -33,12 +40,6 @@
               :version version
               :jar-file jar-file
               :class-dir class-dir}))
-
-(defn javac [_]
-  (b/javac {:basis basis
-            :src-dirs ["src"]
-            :class-dir class-dir
-            :javac-opts ["-source" "8" "-target" "8"]}))
 
 (defn uber [_]
   (clean nil)
